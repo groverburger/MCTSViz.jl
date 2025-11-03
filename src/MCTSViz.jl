@@ -24,6 +24,8 @@ function initialize_application_state()
         :mcts_tree => nothing,
         :mcts_plan_result => nothing,
         :desired_distance => 32,
+        :canvas_pos => CImGui.ImVec2(0,0),
+        :canvas_size => CImGui.ImVec2(0,0),
     )
     return application_state
 end
@@ -65,6 +67,7 @@ end
 mutable struct Camera
     pan::Vector{Float64}
     panning::Bool
+    zoom::Float64
 end
 
 function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
@@ -124,6 +127,46 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     # Setup Dear ImGui style
     CImGui.StyleColorsDark()
 
+    # Initialize camera with zoom
+    camera = Camera([0.0, 0.0], false, 1.0)
+
+    # Setup scroll callback for zooming
+    scroll_callback = (win, xoffset, yoffset) -> begin
+        io = CImGui.GetIO()
+        # Only zoom if the mouse is not over an ImGui window
+        if !unsafe_load(io.WantCaptureMouse)
+            # Get canvas and mouse properties
+            canvas_pos = get_state(:canvas_pos)
+            canvas_size = get_state(:canvas_size)
+            mx, my = GLFW.GetCursorPos(window)
+            mouse_screen = [mx, my]
+
+            # Helper to convert screen coordinates to world coordinates
+            function screen_to_world(screen, pan, zoom, cpos, csize)
+                # Mouse relative to canvas center
+                relative_mouse = [screen[1] - cpos.x - csize.x/2, screen[2] - cpos.y - csize.y/2]
+                # Account for pan and zoom
+                world_pos = (relative_mouse .- pan) ./ zoom
+                return world_pos
+            end
+
+            world_pos_before = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
+
+            # Update zoom
+            camera.zoom *= (1.0 + yoffset * 0.1)
+            camera.zoom = clamp(camera.zoom, 0.1, 10.0) # Clamp zoom level
+
+            world_pos_after = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
+
+            # Adjust pan to keep the point under the mouse stationary
+            #pan_delta = world_pos_before - world_pos_after
+            #camera.pan .+= pan_delta .* camera.zoom
+
+            request_animation_frame(1) # Request a frame render to show the change
+        end
+    end
+    GLFW.SetScrollCallback(window, scroll_callback)
+
     dpi = begin
         monitor = GLFW.GetPrimaryMonitor()
         xscale, yscale = GLFW.GetMonitorContentScale(monitor)
@@ -155,7 +198,7 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     set_state(:first_frame, true)
     canvas::Mirage.Canvas = Mirage.create_canvas(100, 100)
 
-    camera = Camera([0.0, 0.0], false)
+    
     root_node = TreeNode(text = string(mcts_tree.s_labels[1]), index = 1, id = 1)
     node_id_counter = 1
     all_nodes = [root_node]
@@ -279,24 +322,61 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         return findfirst(x -> x[1] == 1, mcts_tree._vis_stats)[2]
     end
 
-    function find_next_states(action_id::Any)
-        next_states = Any[]
-        
-        # Use visualization statistics if available
-        if !isempty(mcts_tree._vis_stats)
-            for ((said, sid), count) in mcts_tree._vis_stats
-                if said == action_id
-                    push!(next_states, sid)
+    function find_next_states(state_id::Any, action_id::Any)
+        mdp = get_state(:mdp)
+        # If no mdp, fallback to the original buggy implementation
+        if mdp === nothing
+            next_states = Any[]
+            if !isempty(mcts_tree._vis_stats)
+                for ((said, sid), count) in mcts_tree._vis_stats
+                    if said == action_id
+                        push!(next_states, sid)
+                    end
                 end
             end
+            return unique(next_states)
         end
-        
-        return unique(next_states)
+
+        state = mcts_tree.s_labels[state_id]
+        action = mcts_tree.a_labels[action_id]
+
+        # Get the distribution of next states
+        dist = POMDPs.transition(mdp, state, action)
+
+        # If there are no next states, return empty
+        if isempty(support(dist))
+            return Int[]
+        end
+
+        # Find the most likely next state
+        max_p = -1.0
+        best_s = nothing
+        for s in support(dist)
+            p = pdf(dist, s) # Use pdf() to get probability of a state
+            if p > max_p
+                max_p = p
+                best_s = s
+            end
+        end
+
+        if best_s === nothing
+            return Int[]
+        end
+
+        # Find the index of the most likely state in the tree's s_labels
+        idx = findfirst(isequal(best_s), mcts_tree.s_labels)
+        if idx !== nothing
+            return [idx]
+        else
+            return Int[]
+        end
     end
 
     # Camera panning
     canvas_pos = CImGui.GetItemRectMin()
     canvas_size = CImGui.GetItemRectSize()
+    set_state(:canvas_pos, canvas_pos)
+    set_state(:canvas_size, canvas_size)
     mx, my = GLFW.GetCursorPos(window)
     is_hovering_canvas = true || CImGui.IsItemHovered()
 
@@ -306,7 +386,6 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         end
         mouse_delta = CImGui.GetIO().MouseDelta
         camera.pan .+= [unsafe_load(mouse_delta.x), unsafe_load(mouse_delta.y)]
-        @info camera.pan
         request_animation_frame(10)
     else
         camera.panning = false
@@ -314,8 +393,8 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
 
     # Physics simulation
     function update_physics(nodes, delta_time)
-        repulsion_strength = 800.0
-        attraction_strength = 0.8
+        repulsion_strength = 600.0
+        attraction_strength = 0.9
         damping = 0.85
 
         for node in nodes
@@ -379,6 +458,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     Mirage.save()
     Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
     Mirage.translate(canvas.width / 2 + camera.pan[1], canvas.height / 2 + camera.pan[2])
+    Mirage.scale(camera.zoom, camera.zoom)
 
     # Draw connections
     function draw_connections(node)
@@ -397,9 +477,13 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     for node in copy(all_nodes)
         Mirage.save()
         
-        world_mouse_pos = [mx - canvas_pos.x - canvas.width/2 - camera.pan[1], my - canvas_pos.y - canvas.height/2 - camera.pan[2]]
+        # Correctly calculate world mouse position considering pan and zoom
+        relative_mouse = [mx - canvas_pos.x - canvas.width/2, my - canvas_pos.y - canvas.height/2]
+        world_mouse_pos = (relative_mouse .- camera.pan) ./ camera.zoom
         
-        is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= 24
+        # Make hover radius constant in screen space by scaling it in world space
+        hover_radius_world = 24 / camera.zoom
+        is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= hover_radius_world
 
         if node.is_state
             Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
@@ -425,7 +509,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                         push!(all_nodes, new_node)
                     end
                 else # is action node
-                    states = find_next_states(node.index)
+                    states = find_next_states(node.parent.index, node.index)
                     for state in states
                         node_id_counter += 1
                         new_node = TreeNode(
@@ -453,9 +537,11 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         end
         
         Mirage.translate(node.position...)
+        # Draw circle with a constant screen-space radius
         Mirage.circle(24)
         Mirage.fill()
         Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
+        Mirage.scale(1 / camera.zoom)
         Mirage.text(node.text)
         Mirage.restore()
     end
@@ -600,6 +686,7 @@ POMDPs.discount(mdp::GridWorldMDP) = mdp.discount_factor
 function test()
     # Create an instance of the problem
     mdp = GridWorldMDP()
+    set_state(:mdp, mdp)
 
     function callback(planner::MCTS.MCTSPlanner, i::Int64)
         if i == 5
