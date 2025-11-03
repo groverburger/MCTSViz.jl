@@ -45,6 +45,14 @@ function request_animation_frame(frames::Int64 = 1)
     global requested_animation_frames = frames
 end
 
+@kwdef mutable struct TreeNode
+    position::Vector{Number} = [0.0, 0.0]
+    text::String = ""
+    is_state::Bool = true
+    index::Int = 0
+    parent_index::Int = 0
+end
+
 function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     if !GLFW.Init()
         @error "Failed to initialize GLFW"
@@ -133,6 +141,10 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     set_state(:first_frame, true)
     canvas::Mirage.Canvas = Mirage.create_canvas(100, 100)
 
+    tree_nodes::Vector{TreeNode} = [TreeNode(text = string(mcts_tree.s_labels[1]), index = 1)]
+    state_node_map::Dict{Int64, TreeNode} = Dict()
+    action_node_map::Dict{Int64, TreeNode} = Dict()
+
     last_frame_time = time()
     try # Wrap main loop in try/finally for cleanup
         while !GLFW.WindowShouldClose(window)
@@ -189,7 +201,7 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
 
             #CImGui.Text("Test: $test")
 
-            main_view(canvas, window, mcts_tree)
+            main_view(canvas, window, mcts_tree, tree_nodes)
             #mcts_tree_visual_window(mcts_canvas, window)
             #pomcpow_tree_visual_window(mcts_canvas, window)
 
@@ -242,22 +254,26 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     end
 end
 
-function main_view(canvas, window, mcts_tree)
+function main_view(canvas, window, mcts_tree, tree_nodes)
     #@info mcts_policy.tree.s_labels
     function get_actions_from_state_index(state_index::Int64)
         #return (;
             #name = mcts_policy.tree.s_labels[state_index],
             #actions = mcts_policy.tree.child_ids[state_index],
         #)
-        return mcts_policy.tree.child_ids[state_index]
+        return mcts_tree.child_ids[state_index]
     end
 
     function get_actions_from_state(state::GridWorldState)
-        return get_actions_from_state_index(mcts_policy.tree.state_map[state])
+        return get_actions_from_state_index(mcts_tree.state_map[state])
     end
 
     function get_state_from_action(action_index::Int64)
-        return findfirst(x -> x[1] == 1, mcts_policy.tree._vis_stats)[2]
+        return findfirst(x -> x[1] == 1, mcts_tree._vis_stats)[2]
+    end
+
+    if CImGui.IsMouseClicked(0) || CImGui.IsMouseClicked(1)
+        request_animation_frame(10)
     end
 
     viewport = CImGui.GetMainViewport()
@@ -268,6 +284,10 @@ function main_view(canvas, window, mcts_tree)
     width = canvas_size.x
     height = canvas_size.y
 
+    mx, my = GLFW.GetCursorPos(window)
+    mx -= canvas_pos.x
+    my -= canvas_pos.y
+
     Mirage.resize!(
         canvas,
         max(1, Int64(width)), max(1, Int64(height))
@@ -276,12 +296,46 @@ function main_view(canvas, window, mcts_tree)
     Mirage.set_canvas(canvas)
     Mirage.save()
     Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
-    Mirage.fillcolor(Mirage.rgba(0, 0, 50, 255))
-    Mirage.fillrect(0, 0, width, height)
-    Mirage.fillcolor(Mirage.rgba(255, 0, 0, 255))
+
     Mirage.translate(width / 2, height / 2)
-    Mirage.circle(32)
-    Mirage.fill()
+
+    for node in tree_nodes
+        Mirage.save()
+        if node.is_state
+            Mirage.fillcolor(Mirage.rgba(0, 0, 80, 255))
+        else
+            Mirage.fillcolor(Mirage.rgba(155, 155, 0, 255))
+        end
+        Mirage.translate(node.position...)
+        if hypot(node.position[1] + width / 2 - mx, node.position[2] + height / 2 - my) <= 32
+            Mirage.fillcolor(Mirage.rgba(0, 0, 180, 255))
+            if CImGui.IsMouseClicked(0)
+                if node.is_state
+                    for action in get_actions_from_state_index(node.index)
+                        push!(tree_nodes, TreeNode(
+                            text = string(mcts_tree.a_labels[action]),
+                            is_state = false,
+                            index = action,
+                            position = [node.position[1] + 10, node.position[2] + 10]
+                        ))
+                    end
+                else
+                    state_index = get_state_from_action(node.index)
+                    push!(tree_nodes, TreeNode(
+                        text = string(mcts_tree.s_labels[state_index]),
+                        index = state_index,
+                        position = [node.position[1] + 10, node.position[2] + 10]
+                    ))
+                end
+            end
+        end
+        Mirage.circle(32)
+        Mirage.fill()
+        Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
+        Mirage.text(node.text)
+        Mirage.restore()
+    end
+
     Mirage.restore()
     Mirage.set_canvas()
 
@@ -440,6 +494,10 @@ function test()
     # Example usage
     s = GridWorldState(5, 5)
     println(action(mcts_policy, s))  # Returns the suggested action for state (9, 2)
+
+    #@info findfirst(x -> x == s, values(mcts_policy.tree.s_labels))
+    #@info mcts_policy.tree.s_labels
+    #@info rand(initialstate(mdp))
 
     main(mcts_policy.tree)
 
