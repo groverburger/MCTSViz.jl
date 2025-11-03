@@ -23,6 +23,7 @@ function initialize_application_state()
         :mcts_exploration => Ref{Float32}(1.0f0),
         :mcts_tree => nothing,
         :mcts_plan_result => nothing,
+        :desired_distance => 32,
     )
     return application_state
 end
@@ -163,7 +164,7 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     try # Wrap main loop in try/finally for cleanup
         while !GLFW.WindowShouldClose(window)
             current_frame_time = time()
-            delta_time = current_frame_time - last_frame_time
+            delta_time = min(1/30, current_frame_time - last_frame_time)
             last_frame_time = current_frame_time
 
             global requested_animation_frames
@@ -278,18 +279,34 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         return findfirst(x -> x[1] == 1, mcts_tree._vis_stats)[2]
     end
 
+    function find_next_states(action_id::Any)
+        next_states = Any[]
+        
+        # Use visualization statistics if available
+        if !isempty(mcts_tree._vis_stats)
+            for ((said, sid), count) in mcts_tree._vis_stats
+                if said == action_id
+                    push!(next_states, sid)
+                end
+            end
+        end
+        
+        return unique(next_states)
+    end
+
     # Camera panning
     canvas_pos = CImGui.GetItemRectMin()
     canvas_size = CImGui.GetItemRectSize()
     mx, my = GLFW.GetCursorPos(window)
-    is_hovering_canvas = CImGui.IsItemHovered()
+    is_hovering_canvas = true || CImGui.IsItemHovered()
 
     if is_hovering_canvas && CImGui.IsMouseDown(1) # Right mouse button for panning
         if !camera.panning
             camera.panning = true
         end
         mouse_delta = CImGui.GetIO().MouseDelta
-        camera.pan .+= [mouse_delta.x, mouse_delta.y]
+        camera.pan .+= [unsafe_load(mouse_delta.x), unsafe_load(mouse_delta.y)]
+        @info camera.pan
         request_animation_frame(10)
     else
         camera.panning = false
@@ -297,8 +314,8 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
 
     # Physics simulation
     function update_physics(nodes, delta_time)
-        repulsion_strength = 50000.0
-        attraction_strength = 0.2
+        repulsion_strength = 800.0
+        attraction_strength = 0.8
         damping = 0.85
 
         for node in nodes
@@ -313,7 +330,9 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                 delta_pos = node_a.position - node_b.position
                 distance_sq = sum(delta_pos.^2)
                 if distance_sq > 1.0 # Avoid extreme forces at very close distances
-                    force_magnitude = repulsion_strength / distance_sq
+
+                    force_magnitude = repulsion_strength * (get_state(:desired_distance)[]^2) / distance_sq
+                    #force_magnitude = repulsion_strength / distance_sq
                     force_vec = force_magnitude * normalize(delta_pos)
                     node_a.force += force_vec
                     node_b.force -= force_vec
@@ -406,20 +425,18 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                         push!(all_nodes, new_node)
                     end
                 else # is action node
-                    state_index = get_state_from_action(node.index)
-                    if state_index != -1
-                        if !any(c -> c.is_state && c.index == state_index, node.children)
-                            node_id_counter += 1
-                            new_node = TreeNode(
-                                text = string(mcts_tree.s_labels[state_index]),
-                                index = state_index,
-                                parent = node,
-                                position = node.position + [rand(-20.0:20.0), rand(-20.0:20.0)],
-                                id = node_id_counter
-                            )
-                            push!(node.children, new_node)
-                            push!(all_nodes, new_node)
-                        end
+                    states = find_next_states(node.index)
+                    for state in states
+                        node_id_counter += 1
+                        new_node = TreeNode(
+                            text = string(mcts_tree.s_labels[state]),
+                            index = state,
+                            parent = node,
+                            position = node.position + [rand(-20.0:20.0), rand(-20.0:20.0)],
+                            id = node_id_counter
+                        )
+                        push!(node.children, new_node)
+                        push!(all_nodes, new_node)
                     end
                 end
             else
