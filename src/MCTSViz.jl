@@ -537,11 +537,30 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         end
         
         Mirage.translate(node.position...)
-        # Draw circle with a constant screen-space radius
-        Mirage.circle(24)
-        Mirage.fill()
+
+        if node.is_state
+            # Draw circle for state nodes
+            Mirage.circle(24)
+            Mirage.fill()
+        else
+            # Draw diamond for action nodes
+            local node_size = 24 * 0.75
+            Mirage.moveto(0, node_size)
+            Mirage.lineto(node_size, 0)
+            Mirage.lineto(0, -node_size)
+            Mirage.lineto(-node_size, 0)
+            Mirage.closepath()
+            Mirage.fill()
+        end
+
         Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
         Mirage.scale(1 / camera.zoom)
+        
+        # Estimate text size and center it
+        font_size = 16
+        text_width = length(node.text) * (font_size * 0.5)
+        Mirage.translate(-text_width / 2, -font_size / 3)
+
         Mirage.text(node.text)
         Mirage.restore()
     end
