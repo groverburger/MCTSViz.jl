@@ -2,7 +2,7 @@
 
 julia_version = "1.12.0"
 manifest_format = "2.0"
-project_hash = "caed86cd8282a115de82f12ccb77dd2c371ec44b"
+project_hash = "65b957ae7a382bdd34faf94616e8b03c70678951"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1012,7 +1012,7 @@ uuid = "e12ccd36-dcad-5f33-8774-9175229e7b33"
 version = "0.5.7"
 
 [[deps.MCTSViz]]
-deps = ["CImGui", "GLFW", "MCTS", "Mirage", "ModernGL", "POMDPs", "Revise"]
+deps = ["CImGui", "GLFW", "MCTS", "Mirage", "ModernGL", "POMDPTools", "POMDPs", "Revise"]
 path = "."
 uuid = "19ce4859-8410-49b4-9f07-2a3e10e4195f"
 version = "0.1.0"

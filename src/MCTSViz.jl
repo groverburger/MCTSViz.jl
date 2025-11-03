@@ -4,7 +4,11 @@ using Revise
 using GLFW
 using ModernGL
 using CImGui
+using LinearAlgebra: normalize
 import Mirage
+using POMDPs
+using MCTS
+using POMDPTools
 
 global application_state::Dict{Symbol, Any} = Dict()
 function initialize_application_state()
@@ -46,11 +50,20 @@ function request_animation_frame(frames::Int64 = 1)
 end
 
 @kwdef mutable struct TreeNode
-    position::Vector{Number} = [0.0, 0.0]
+    position::Vector{Float64} = [0.0, 0.0]
+    velocity::Vector{Float64} = [0.0, 0.0]
+    force::Vector{Float64} = [0.0, 0.0]
     text::String = ""
     is_state::Bool = true
     index::Int = 0
-    parent_index::Int = 0
+    parent::Union{TreeNode, Nothing} = nothing
+    children::Vector{TreeNode} = []
+    id::Int = 0
+end
+
+mutable struct Camera
+    pan::Vector{Float64}
+    panning::Bool
 end
 
 function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
@@ -141,9 +154,10 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     set_state(:first_frame, true)
     canvas::Mirage.Canvas = Mirage.create_canvas(100, 100)
 
-    tree_nodes::Vector{TreeNode} = [TreeNode(text = string(mcts_tree.s_labels[1]), index = 1)]
-    state_node_map::Dict{Int64, TreeNode} = Dict()
-    action_node_map::Dict{Int64, TreeNode} = Dict()
+    camera = Camera([0.0, 0.0], false)
+    root_node = TreeNode(text = string(mcts_tree.s_labels[1]), index = 1, id = 1)
+    node_id_counter = 1
+    all_nodes = [root_node]
 
     last_frame_time = time()
     try # Wrap main loop in try/finally for cleanup
@@ -201,7 +215,7 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
 
             #CImGui.Text("Test: $test")
 
-            main_view(canvas, window, mcts_tree, tree_nodes)
+            node_id_counter = main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
             #mcts_tree_visual_window(mcts_canvas, window)
             #pomcpow_tree_visual_window(mcts_canvas, window)
 
@@ -254,82 +268,175 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     end
 end
 
-function main_view(canvas, window, mcts_tree, tree_nodes)
-    #@info mcts_policy.tree.s_labels
+function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
+    # Helper functions
     function get_actions_from_state_index(state_index::Int64)
-        #return (;
-            #name = mcts_policy.tree.s_labels[state_index],
-            #actions = mcts_policy.tree.child_ids[state_index],
-        #)
-        return mcts_tree.child_ids[state_index]
-    end
-
-    function get_actions_from_state(state::GridWorldState)
-        return get_actions_from_state_index(mcts_tree.state_map[state])
+        return (1 <= state_index <= length(mcts_tree.child_ids)) ? mcts_tree.child_ids[state_index] : Int[]
     end
 
     function get_state_from_action(action_index::Int64)
         return findfirst(x -> x[1] == 1, mcts_tree._vis_stats)[2]
     end
 
-    if CImGui.IsMouseClicked(0) || CImGui.IsMouseClicked(1)
-        request_animation_frame(10)
-    end
-
-    viewport = CImGui.GetMainViewport()
-    size = unsafe_load(viewport.Size)
-
+    # Camera panning
     canvas_pos = CImGui.GetItemRectMin()
     canvas_size = CImGui.GetItemRectSize()
-    width = canvas_size.x
-    height = canvas_size.y
-
     mx, my = GLFW.GetCursorPos(window)
-    mx -= canvas_pos.x
-    my -= canvas_pos.y
+    is_hovering_canvas = CImGui.IsItemHovered()
 
-    Mirage.resize!(
-        canvas,
-        max(1, Int64(width)), max(1, Int64(height))
-    )
-
-    Mirage.set_canvas(canvas)
-    Mirage.save()
-    Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
-
-    Mirage.translate(width / 2, height / 2)
-
-    for node in tree_nodes
-        Mirage.save()
-        if node.is_state
-            Mirage.fillcolor(Mirage.rgba(0, 0, 80, 255))
-        else
-            Mirage.fillcolor(Mirage.rgba(155, 155, 0, 255))
+    if is_hovering_canvas && CImGui.IsMouseDown(1) # Right mouse button for panning
+        if !camera.panning
+            camera.panning = true
         end
-        Mirage.translate(node.position...)
-        if hypot(node.position[1] + width / 2 - mx, node.position[2] + height / 2 - my) <= 32
-            Mirage.fillcolor(Mirage.rgba(0, 0, 180, 255))
-            if CImGui.IsMouseClicked(0)
-                if node.is_state
-                    for action in get_actions_from_state_index(node.index)
-                        push!(tree_nodes, TreeNode(
-                            text = string(mcts_tree.a_labels[action]),
-                            is_state = false,
-                            index = action,
-                            position = [node.position[1] + 10, node.position[2] + 10]
-                        ))
-                    end
-                else
-                    state_index = get_state_from_action(node.index)
-                    push!(tree_nodes, TreeNode(
-                        text = string(mcts_tree.s_labels[state_index]),
-                        index = state_index,
-                        position = [node.position[1] + 10, node.position[2] + 10]
-                    ))
+        mouse_delta = CImGui.GetIO().MouseDelta
+        camera.pan .+= [mouse_delta.x, mouse_delta.y]
+        request_animation_frame(10)
+    else
+        camera.panning = false
+    end
+
+    # Physics simulation
+    function update_physics(nodes, delta_time)
+        repulsion_strength = 50000.0
+        attraction_strength = 0.2
+        damping = 0.85
+
+        for node in nodes
+            node.force = [0.0, 0.0]
+        end
+
+        # Repulsion
+        for i in 1:length(nodes)
+            for j in (i+1):length(nodes)
+                node_a = nodes[i]
+                node_b = nodes[j]
+                delta_pos = node_a.position - node_b.position
+                distance_sq = sum(delta_pos.^2)
+                if distance_sq > 1.0 # Avoid extreme forces at very close distances
+                    force_magnitude = repulsion_strength / distance_sq
+                    force_vec = force_magnitude * normalize(delta_pos)
+                    node_a.force += force_vec
+                    node_b.force -= force_vec
                 end
             end
         end
-        Mirage.circle(32)
+
+        # Attraction
+        for node in nodes
+            if node.parent !== nothing
+                delta_pos = node.parent.position - node.position
+                force = attraction_strength * delta_pos
+                node.force += force
+                node.parent.force -= force
+            end
+        end
+
+        # Update positions
+        for node in nodes
+            if node.id == 1 # Fix root node
+                node.position = [0.0, 0.0]
+                node.velocity = [0.0, 0.0]
+                node.force = [0.0, 0.0]
+                continue
+            end
+
+            node.velocity += node.force * delta_time
+            node.velocity *= damping
+            node.position += node.velocity * delta_time
+        end
+    end
+
+    update_physics(all_nodes, delta_time)
+    request_animation_frame(1)
+
+
+    # Rendering
+    Mirage.resize!(canvas, max(1, Int(trunc(canvas_size.x))), max(1, Int(trunc(canvas_size.y))))
+    Mirage.set_canvas(canvas)
+    Mirage.save()
+    Mirage.fillcolor(Mirage.rgba(0, 0, 20, 255))
+    Mirage.fillrect(0, 0, canvas.width, canvas.height)
+    Mirage.restore()
+    Mirage.save()
+    Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
+    Mirage.translate(canvas.width / 2 + camera.pan[1], canvas.height / 2 + camera.pan[2])
+
+    # Draw connections
+    function draw_connections(node)
+        for child in node.children
+            Mirage.strokecolor(Mirage.rgba(255, 255, 255, 50))
+            Mirage.strokewidth(1.5)
+            Mirage.moveto(node.position...)
+            Mirage.lineto(child.position...)
+            Mirage.stroke()
+            draw_connections(child)
+        end
+    end
+    draw_connections(root_node)
+
+    # Draw nodes and handle clicks
+    for node in copy(all_nodes)
+        Mirage.save()
+        
+        world_mouse_pos = [mx - canvas_pos.x - canvas.width/2 - camera.pan[1], my - canvas_pos.y - canvas.height/2 - camera.pan[2]]
+        
+        is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= 24
+
+        if node.is_state
+            Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
+        else
+            Mirage.fillcolor(is_hovered ? Mirage.rgba(200, 200, 0, 255) : Mirage.rgba(155, 155, 0, 255))
+        end
+
+        if is_hovered && CImGui.IsMouseClicked(0) && !camera.panning
+            if isempty(node.children)
+                if node.is_state
+                    actions = get_actions_from_state_index(node.index)
+                    for action in actions
+                        node_id_counter += 1
+                        new_node = TreeNode(
+                            text = string(mcts_tree.a_labels[action]),
+                            is_state = false,
+                            index = action,
+                            parent = node,
+                            position = node.position + [rand(-20.0:20.0), rand(-20.0:20.0)],
+                            id = node_id_counter
+                        )
+                        push!(node.children, new_node)
+                        push!(all_nodes, new_node)
+                    end
+                else # is action node
+                    state_index = get_state_from_action(node.index)
+                    if state_index != -1
+                        if !any(c -> c.is_state && c.index == state_index, node.children)
+                            node_id_counter += 1
+                            new_node = TreeNode(
+                                text = string(mcts_tree.s_labels[state_index]),
+                                index = state_index,
+                                parent = node,
+                                position = node.position + [rand(-20.0:20.0), rand(-20.0:20.0)],
+                                id = node_id_counter
+                            )
+                            push!(node.children, new_node)
+                            push!(all_nodes, new_node)
+                        end
+                    end
+                end
+            else
+                function delete_children_recursive(n)
+                    for child in n.children
+                        delete_children_recursive(child)
+                        filter!(x -> x.id != child.id, all_nodes)
+                    end
+                    empty!(n.children)
+                end
+                delete_children_recursive(node)
+            end
+            request_animation_frame(10)
+        end
+        
+        Mirage.translate(node.position...)
+        Mirage.circle(24)
         Mirage.fill()
         Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
         Mirage.text(node.text)
@@ -339,23 +446,19 @@ function main_view(canvas, window, mcts_tree, tree_nodes)
     Mirage.restore()
     Mirage.set_canvas()
 
-    # Get the window draw list
+    # Draw canvas to ImGui window
     draw_list = CImGui.GetWindowDrawList()
-
-    # Use AddImage with the correct syntax
     CImGui.AddImage(
         draw_list,
         CImGui.ImTextureRef(UInt64(canvas.texture[])),
         CImGui.ImVec2(canvas_pos.x, canvas_pos.y),
         CImGui.ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
-        CImGui.ImVec2(0, 1), # UV coordinates (flipped vertically for OpenGL)
+        CImGui.ImVec2(0, 1),
         CImGui.ImVec2(1, 0)
     )
-end
 
-using POMDPs
-using MCTS
-using POMDPTools
+    return node_id_counter
+end
 
 # Define the state type for grid locations
 struct GridWorldState

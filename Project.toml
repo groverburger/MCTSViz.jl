@@ -6,6 +6,7 @@ authors = ["groverburger <19754251+groverburger@users.noreply.github.com>"]
 [deps]
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
 GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MCTS = "e12ccd36-dcad-5f33-8774-9175229e7b33"
 Mirage = "e54eaeca-a684-404c-9867-c26beaca1479"
 ModernGL = "66fc600b-dfda-50eb-8b99-91cfa97b1301"
@@ -16,6 +17,7 @@ Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 [compat]
 CImGui = "6.2.1"
 GLFW = "3.4.5"
+LinearAlgebra = "1.12.0"
 MCTS = "0.5.7"
 Mirage = "0.1.0"
 ModernGL = "1.1.8"
