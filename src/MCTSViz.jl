@@ -26,7 +26,7 @@ function initialize_application_state()
         :desired_distance => 32,
         :canvas_pos => CImGui.ImVec2(0,0),
         :canvas_size => CImGui.ImVec2(0,0),
-        :color_code_q_values => Ref(false),
+        :color_code_q_values => Ref(true),
         :color_code_n_values => Ref(false),
         :show_node_text => Ref(true),
     )
@@ -73,7 +73,9 @@ mutable struct Camera
     zoom::Float64
 end
 
-function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true, expand_levels::Int = 3)
+function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 3)
+    mcts_tree = mcts_policy.tree
+
     if !GLFW.Init()
         @error "Failed to initialize GLFW"
         return
@@ -234,8 +236,8 @@ function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true, expand_lev
 
             # Set up the dockspace
             viewport = CImGui.GetMainViewport()
-            window_flags = CImGui.ImGuiWindowFlags_MenuBar | CImGui.ImGuiWindowFlags_NoDocking
-            window_flags |= CImGui.ImGuiWindowFlags_NoTitleBar | CImGui.ImGuiWindowFlags_NoCollapse
+            #window_flags = CImGui.ImGuiWindowFlags_MenuBar | CImGui.ImGuiWindowFlags_NoDocking
+            window_flags = CImGui.ImGuiWindowFlags_NoTitleBar | CImGui.ImGuiWindowFlags_NoCollapse
             window_flags |= CImGui.ImGuiWindowFlags_NoResize | CImGui.ImGuiWindowFlags_NoMove
             window_flags |= CImGui.ImGuiWindowFlags_NoBringToFrontOnFocus | CImGui.ImGuiWindowFlags_NoNavFocus
             window_flags |= CImGui.ImGuiWindowFlags_NoBackground
@@ -443,7 +445,8 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     set_state(:canvas_pos, canvas_pos)
     set_state(:canvas_size, canvas_size)
     mx, my = GLFW.GetCursorPos(window)
-    is_hovering_canvas = true || CImGui.IsItemHovered()
+    io = CImGui.GetIO()
+    is_hovering_canvas = mx >= canvas_pos.x && mx <= canvas_pos.x + canvas_size.x && my >= canvas_pos.y && my <= canvas_pos.y + canvas_size.y && !unsafe_load(io.WantCaptureMouse)
 
     if is_hovering_canvas && CImGui.IsMouseDown(0) # Right mouse button for panning
         if !camera.panning
@@ -551,7 +554,10 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         world_mouse_pos = (relative_mouse .- camera.pan) ./ camera.zoom
         
         # Make hover radius constant in screen space by scaling it in world space
-        is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= 24
+        is_hovered = (
+            is_hovering_canvas &&
+            hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= 24
+        )
 
         if node.is_state
             if get_state(:color_code_n_values)[]
@@ -572,7 +578,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     (255/255,  69/255,   0/255),  # red-orange
                 ])
                 color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(255, 255, 255, 255) : (color[1], color[2], color[3], 255))
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 155, 255) : (color[1], color[2], color[3], 255))
             else
                 Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
             end
@@ -597,7 +603,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     (255/255,  69/255,   0/255),  # red-orange
                 ])
                 color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(255, 255, 255, 255) : (color[1], color[2], color[3], 255))
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 155, 255) : (color[1], color[2], color[3], 255))
             else
                 Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 0, 255) : Mirage.rgba(100, 100, 0, 255))
             end
@@ -714,6 +720,11 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     Mirage.save()
                     # Center each line horizontally
                     Mirage.translate(round((text_width - line_width) / 2), round((i-1) * font_size))
+                    Mirage.save()
+                    Mirage.translate(1, 1)
+                    Mirage.fillcolor(Mirage.rgba(0, 0, 0, 255))
+                    Mirage.text(string(line))
+                    Mirage.restore()
                     Mirage.text(string(line))
                     Mirage.restore()
                 end
@@ -772,157 +783,8 @@ function interpolate_palette(t::Float64, colors)::Tuple
     return interpolate_rgb(local_t, c1, c2)
 end
 
-# Define the state type for grid locations
-struct GridWorldState
-    x::Int
-    y::Int
-end
+include("./example_mdp.jl")
 
-Base.:(==)(s1::GridWorldState, s2::GridWorldState) = s1.x == s2.x && s1.y == s2.y
-
-# Define the MDP type
-struct GridWorldMDP <: MDP{GridWorldState, Symbol}
-    size_x::Int
-    size_y::Int
-    reward_states_values::Dict{GridWorldState, Float64}
-    hit_wall_reward::Float64
-    tprob::Float64
-    discount_factor::Float64
-end
-
-function GridWorldMDP(; size_x=10, size_y=10,
-    reward_states_values=Dict(
-        GridWorldState(4,3)=>-10.0,
-        GridWorldState(4,6)=>-5.0,
-        GridWorldState(9,3)=>10.0,
-        GridWorldState(8,8)=>3.0
-    ),
-    hit_wall_reward=-1.0,
-    tprob=0.7,
-    discount_factor=0.9
-)
-    GridWorldMDP(size_x, size_y, reward_states_values, hit_wall_reward, tprob, discount_factor)
-end
-
-# State space
-function POMDPs.states(mdp::GridWorldMDP)
-    states_array = GridWorldState[]
-    for x in 1:mdp.size_x
-        for y in 1:mdp.size_y
-            push!(states_array, GridWorldState(x, y))
-        end
-    end
-    push!(states_array, GridWorldState(-1, -1)) # terminal state
-    return states_array
-end
-
-POMDPs.isterminal(mdp::GridWorldMDP, s::GridWorldState) = s == GridWorldState(-1, -1)
-POMDPs.initialstate(mdp::GridWorldMDP) = Deterministic(GridWorldState(1, 1))
-
-# Actions
-POMDPs.actions(mdp::GridWorldMDP) = [:up, :down, :left, :right]
-
-# Transition function
-function POMDPs.transition(mdp::GridWorldMDP, s::GridWorldState, a::Symbol)
-    if isterminal(mdp, s)
-        return SparseCat([s], [1.0])
-    end
-    if s in keys(mdp.reward_states_values) && mdp.reward_states_values[s] > 0
-        return SparseCat([GridWorldState(-1, -1)], [1.0])
-    end
-    tprob_other = (1 - mdp.tprob) / 3
-    new_state_up    = GridWorldState(s.x, min(s.y + 1, mdp.size_y))
-    new_state_down  = GridWorldState(s.x, max(s.y - 1, 1))
-    new_state_left  = GridWorldState(max(s.x - 1, 1), s.y)
-    new_state_right = GridWorldState(min(s.x + 1, mdp.size_x), s.y)
-    new_state_vector = [new_state_up, new_state_down, new_state_left, new_state_right]
-    t_prob_vector = fill(tprob_other, 4)
-    if a == :up
-        t_prob_vector[1] = mdp.tprob
-    elseif a == :down
-        t_prob_vector[2] = mdp.tprob
-    elseif a == :left
-        t_prob_vector[3] = mdp.tprob
-    elseif a == :right
-        t_prob_vector[4] = mdp.tprob
-    else
-        error("Invalid action")
-    end
-    # Combine probabilities for duplicate states
-    for i in 1:4
-        for j in (i+1):4
-            if new_state_vector[i] == new_state_vector[j]
-                t_prob_vector[i] += t_prob_vector[j]
-                t_prob_vector[j] = 0.0
-            end
-        end
-    end
-    # Remove states with zero probability
-    new_state_vector = new_state_vector[t_prob_vector .> 0]
-    t_prob_vector = t_prob_vector[t_prob_vector .> 0]
-    return SparseCat(new_state_vector, t_prob_vector)
-end
-
-# Reward function
-function POMDPs.reward(mdp::GridWorldMDP, s::GridWorldState, a::Symbol, sp::GridWorldState)
-    if isterminal(mdp, s)
-        return 0.0
-    end
-    if s in keys(mdp.reward_states_values) && mdp.reward_states_values[s] > 0
-        return mdp.reward_states_values[s]
-    end
-    r = 0.0
-    if s in keys(mdp.reward_states_values) && mdp.reward_states_values[s] < 0
-        r += mdp.reward_states_values[s]
-    end
-    if s == sp
-        r += mdp.hit_wall_reward
-    end
-    return r
-end
-
-function POMDPs.reward(mdp::GridWorldMDP, s::GridWorldState, a::Symbol)
-    r = 0.0
-    for (sp, p) in transition(mdp, s, a)
-        r += p * reward(mdp, s, a, sp)
-    end
-    return r
-end
-
-# Discount function
-POMDPs.discount(mdp::GridWorldMDP) = mdp.discount_factor
-
-function test()
-    # Create an instance of the problem
-    mdp = GridWorldMDP()
-
-    function callback(planner::MCTS.MCTSPlanner, i::Int64)
-        if i == 5
-            @info planner.tree
-        end
-    end
-
-    # Solve using MCTS
-    solver = MCTSSolver(;n_iterations=1000, depth=20, exploration_constant=10.0, callback, enable_tree_vis=true)
-    mcts_policy = solve(solver, mdp)
-
-    # Example usage
-    s = GridWorldState(5, 5)
-    println(action(mcts_policy, s))  # Returns the suggested action for state (9, 2)
-
-    #@info findfirst(x -> x == s, values(mcts_policy.tree.s_labels))
-    #@info mcts_policy.tree.s_labels
-    #@info rand(initialstate(mdp))
-
-    main(mdp, mcts_policy.tree)
-
-    #@info mcts_policy.tree.s_labels[1]
-    #@info mcts_policy.tree.child_ids[1]
-    #@info findfirst(x -> x[1] == 1, mcts_policy.tree._vis_stats)
-
-    #@info get_actions_from_state(s)[1] |> get_state_from_action |> get_actions_from_state_index
-end
-
-export main, test
+export mcts_viz, example_mdp
 
 end # module MCTSViz
