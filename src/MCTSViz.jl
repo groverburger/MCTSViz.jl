@@ -543,7 +543,9 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             draw_connections(child)
         end
     end
+    Mirage.save()
     draw_connections(root_node)
+    Mirage.restore()
 
     # Draw nodes and handle clicks
     for node in copy(all_nodes)
@@ -578,9 +580,9 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     (255/255,  69/255,   0/255),  # red-orange
                 ])
                 color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 155, 255) : (color[1], color[2], color[3], 255))
+                Mirage.fillcolor((color[1], color[2], color[3], 255))
             else
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
+                Mirage.fillcolor((0, 0, 80, 255))
             end
         else
             if get_state(:color_code_q_values)[]
@@ -603,9 +605,9 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     (255/255,  69/255,   0/255),  # red-orange
                 ])
                 color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 155, 255) : (color[1], color[2], color[3], 255))
+                Mirage.fillcolor((color[1], color[2], color[3], 255))
             else
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 0, 255) : Mirage.rgba(100, 100, 0, 255))
+                Mirage.fillcolor((100, 100, 0, 255))
             end
         end
 
@@ -666,6 +668,14 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             # Draw circle for state nodes
             Mirage.circle(24)
             Mirage.fill()
+            if is_hovered
+                Mirage.save()
+                Mirage.strokecolor(Mirage.rgba(255, 255, 255, 255))
+                Mirage.strokewidth(3)
+                Mirage.circle(24)
+                Mirage.stroke()
+                Mirage.restore()
+            end
         else
             # Draw diamond for action nodes
             local node_size = 24 * 0.75
@@ -675,6 +685,18 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             Mirage.lineto(-node_size, 0)
             Mirage.closepath()
             Mirage.fill()
+            if is_hovered
+                Mirage.save()
+                Mirage.strokecolor(Mirage.rgba(255, 255, 255, 255))
+                Mirage.strokewidth(3)
+                Mirage.moveto(0, node_size)
+                Mirage.lineto(node_size, 0)
+                Mirage.lineto(0, -node_size)
+                Mirage.lineto(-node_size, 0)
+                Mirage.closepath()
+                Mirage.stroke()
+                Mirage.restore()
+            end
         end
 
         let
@@ -711,8 +733,12 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                 text_width = max_width * font_size / 2
                 text_height = length(lines) * font_size
                 
-                # Adjust for multi-line text
-                Mirage.translate(-text_width / 2, -text_height/2 + font_size/2)
+                if is_hovered
+                    Mirage.translate(world_mouse_pos[1] - node.position[1] - text_width / 2, world_mouse_pos[2] - node.position[2] - text_height - 10)
+                else
+                    # Adjust for multi-line text
+                    Mirage.translate(-text_width / 2, -text_height/2 + font_size/2)
+                end
 
                 # Render each line of text
                 for (i, line) in enumerate(lines)
