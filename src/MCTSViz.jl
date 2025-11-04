@@ -27,6 +27,7 @@ function initialize_application_state()
         :canvas_pos => CImGui.ImVec2(0,0),
         :canvas_size => CImGui.ImVec2(0,0),
         :color_code_q_values => Ref(false),
+        :color_code_n_values => Ref(false),
     )
     return application_state
 end
@@ -321,6 +322,10 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     max_q_value = maximum(q_values)
     max_abs_q = isempty(q_values) ? 0.0 : maximum(abs.(q_values))
 
+    n_values = values(mcts_tree.total_n)
+    min_n_value = minimum(n_values)
+    max_n_value = maximum(n_values)
+
     # Helper functions
     function get_actions_from_state_index(state_index::Int64)
         return (1 <= state_index <= length(mcts_tree.child_ids)) ? mcts_tree.child_ids[state_index] : Int[]
@@ -497,7 +502,28 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= 24
 
         if node.is_state
-            Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
+            if get_state(:color_code_n_values)[]
+                n_val = mcts_tree.total_n[node.index]
+                intensity = 0.0
+                if max_n_value > 0
+                    intensity = (n_val - min_n_value) / (max_n_value - min_n_value)
+                end
+
+                rainbow = reverse([
+                    #(  0/255,  92/255, 230/255),  # blue
+                    (  0/255, 174/255, 239/255),  # cyan
+                    #(  0/255, 191/255, 165/255),  # teal green
+                    ( 68/255, 206/255,  27/255),  # green
+                    (187/255, 219/255,  68/255),  # lime
+                    (247/255, 227/255, 121/255),  # yellow
+                    (242/255, 161/255,  52/255),  # orange
+                    (255/255,  69/255,   0/255),  # red-orange
+                ])
+                color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(255, 255, 255, 255) : (color[1], color[2], color[3], 255))
+            else
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
+            end
         else
             if get_state(:color_code_q_values)[]
                 q_val = mcts_tree.q[node.index]
@@ -657,6 +683,7 @@ end
 function settings_window()
     CImGui.Begin("Settings")
     CImGui.Checkbox("Color code Q-values", get_state(:color_code_q_values))
+    CImGui.Checkbox("Color code N-values", get_state(:color_code_n_values))
     CImGui.End()
 end
 
