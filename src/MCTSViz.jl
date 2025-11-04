@@ -533,13 +533,46 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     Mirage.scale(camera.zoom, camera.zoom)
 
     # Draw connections
+    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius)
+        direction = normalize(p2 - p1)
+        p2_adjusted = p2 - direction * node_radius
+        
+        # Draw the main line
+        Mirage.moveto(p1...)
+        Mirage.lineto(p2_adjusted...)
+        Mirage.stroke()
+
+        # Calculate arrowhead points
+        p3 = p2_adjusted - arrowhead_length * direction
+        
+        # Rotate direction vector for arrowhead lines
+        # Rotate by +arrowhead_angle
+        arrow_p1 = [
+            cos(arrowhead_angle) * (p3[1] - p2_adjusted[1]) - sin(arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[1],
+            sin(arrowhead_angle) * (p3[1] - p2_adjusted[1]) + cos(arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[2]
+        ]
+        
+        # Rotate by -arrowhead_angle
+        arrow_p2 = [
+            cos(-arrowhead_angle) * (p3[1] - p2_adjusted[1]) - sin(-arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[1],
+            sin(-arrowhead_angle) * (p3[1] - p2_adjusted[1]) + cos(-arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[2]
+        ]
+
+        # Draw arrowhead
+        Mirage.moveto(p2_adjusted...)
+        Mirage.lineto(arrow_p1...)
+        Mirage.stroke()
+        
+        Mirage.moveto(p2_adjusted...)
+        Mirage.lineto(arrow_p2...)
+        Mirage.stroke()
+    end
+
     function draw_connections(node)
         for child in node.children
             Mirage.strokecolor(Mirage.rgba(255, 255, 255, 50))
             Mirage.strokewidth(1.5)
-            Mirage.moveto(node.position...)
-            Mirage.lineto(child.position...)
-            Mirage.stroke()
+            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0)
             draw_connections(child)
         end
     end
