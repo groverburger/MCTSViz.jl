@@ -28,6 +28,7 @@ function initialize_application_state()
         :canvas_size => CImGui.ImVec2(0,0),
         :color_code_q_values => Ref(false),
         :color_code_n_values => Ref(false),
+        :show_node_text => Ref(true),
     )
     return application_state
 end
@@ -376,7 +377,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             return Int[]
         end
 
-        # Find the index of the most likely state in the tree's s_labels
+        # Find the index of the most likely state in the tree\'s s_labels
         idx = findfirst(isequal(best_s), mcts_tree.s_labels)
         if idx !== nothing
             return [idx]
@@ -619,45 +620,53 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             Mirage.fill()
         end
 
-        local text_to_render = node.text
-        if node.is_state
-            s_idx = node.index
-            state = mcts_tree.s_labels[s_idx]
-            visits = mcts_tree.total_n[s_idx]
-            text_to_render = "$(node.text)\nN: $(visits)"
-        else
-            a_idx = node.index
-            action = mcts_tree.a_labels[a_idx]
-            visits = mcts_tree.n[a_idx]
-            v_val = round(mcts_tree.q[a_idx], digits=3)
-            text_to_render = "a: $(action)\nN: $visits, Q: $v_val"
-        end
+        let
+            should_render_text = get_state(:show_node_text)[] || is_hovered
+            if camera.zoom < 0.5 && !is_hovered
+                should_render_text = false
+            end
 
-        Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
-        Mirage.scale(1 / camera.zoom)
-        
-        # Estimate text size and center it
-        font_size = 16
-        lines = split(text_to_render, '
-')
-        max_width = 0
-        for line in lines
-            max_width = max(max_width, length(line))
-        end
-        text_width = max_width * font_size / 2
-        text_height = length(lines) * font_size
-        
-        # Adjust for multi-line text
-        Mirage.translate(-text_width / 2, -text_height/2 + font_size/2)
+            if should_render_text
+                local text_to_render = node.text
+                if node.is_state
+                    s_idx = node.index
+                    state = mcts_tree.s_labels[s_idx]
+                    visits = mcts_tree.total_n[s_idx]
+                    text_to_render = "$(node.text)\nN: $(visits)"
+                else
+                    a_idx = node.index
+                    action = mcts_tree.a_labels[a_idx]
+                    visits = mcts_tree.n[a_idx]
+                    v_val = round(mcts_tree.q[a_idx], digits=3)
+                    text_to_render = "a: $(action)\nN: $visits, Q: $v_val"
+                end
 
-        # Render each line of text
-        for (i, line) in enumerate(lines)
-            line_width = length(line) * font_size / 2
-            Mirage.save()
-            # Center each line horizontally
-            Mirage.translate(round((text_width - line_width) / 2), round((i-1) * font_size))
-            Mirage.text(string(line))
-            Mirage.restore()
+                Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
+                Mirage.scale(1 / camera.zoom)
+                
+                # Estimate text size and center it
+                font_size = 16
+                lines = split(text_to_render, '\n')
+                max_width = 0
+                for line in lines
+                    max_width = max(max_width, length(line))
+                end
+                text_width = max_width * font_size / 2
+                text_height = length(lines) * font_size
+                
+                # Adjust for multi-line text
+                Mirage.translate(-text_width / 2, -text_height/2 + font_size/2)
+
+                # Render each line of text
+                for (i, line) in enumerate(lines)
+                    line_width = length(line) * font_size / 2
+                    Mirage.save()
+                    # Center each line horizontally
+                    Mirage.translate(round((text_width - line_width) / 2), round((i-1) * font_size))
+                    Mirage.text(string(line))
+                    Mirage.restore()
+                end
+            end
         end
 
         Mirage.restore()
@@ -684,6 +693,7 @@ function settings_window()
     CImGui.Begin("Settings")
     CImGui.Checkbox("Color code Q-values", get_state(:color_code_q_values))
     CImGui.Checkbox("Color code N-values", get_state(:color_code_n_values))
+    CImGui.Checkbox("Show node text", get_state(:show_node_text))
     CImGui.End()
 end
 
