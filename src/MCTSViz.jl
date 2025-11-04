@@ -73,7 +73,7 @@ mutable struct Camera
     zoom::Float64
 end
 
-function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
+function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true, expand_levels::Int = 3)
     if !GLFW.Init()
         @error "Failed to initialize GLFW"
         return
@@ -264,7 +264,7 @@ function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
 
             #CImGui.Text("Test: $test")
 
-            node_id_counter = main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
+            node_id_counter = main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
             #mcts_tree_visual_window(mcts_canvas, window)
             #pomcpow_tree_visual_window(mcts_canvas, window)
 
@@ -317,7 +317,7 @@ function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     end
 end
 
-function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
+function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
     q_values = values(mcts_tree.q)
     min_q_value = minimum(q_values)
     max_q_value = maximum(q_values)
@@ -384,6 +384,57 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         else
             return Int[]
         end
+    end
+
+    function expand_node(node, levels)
+        if levels <= 0
+            return
+        end
+
+        next_position(i, i_max) = [cos(i / i_max) * 40.0, sin(i / i_max) * 40.0] + (
+            node.position[1] == 0.0 && node.position[2] == 0.0
+            ? [0.0, 0.0]
+            : node.position + normalize(node.position) * 20
+        )
+
+        if isempty(node.children)
+            if node.is_state
+                actions = get_actions_from_state_index(node.index)
+                for (a_idx, action) in enumerate(actions)
+                    node_id_counter += 1
+                    new_node = TreeNode(
+                        text = string(mcts_tree.a_labels[action]),
+                        is_state = false,
+                        index = action,
+                        parent = node,
+                        position = next_position(a_idx, length(actions)),
+                        id = node_id_counter
+                    )
+                    push!(node.children, new_node)
+                    push!(all_nodes, new_node)
+                    expand_node(new_node, levels - 1)
+                end
+            else # is action node
+                states = find_next_states(node.parent.index, node.index)
+                for state in states
+                    node_id_counter += 1
+                    new_node = TreeNode(
+                        text = string(mcts_tree.s_labels[state]),
+                        index = state,
+                        parent = node,
+                        position = next_position(0, 1),
+                        id = node_id_counter
+                    )
+                    push!(node.children, new_node)
+                    push!(all_nodes, new_node)
+                    expand_node(new_node, levels - 1)
+                end
+            end
+        end
+    end
+
+    if get_state(:first_frame)
+        expand_node(root_node, expand_levels)
     end
 
     # Camera panning
