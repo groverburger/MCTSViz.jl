@@ -160,8 +160,8 @@ function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
             world_pos_after = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
 
             # Adjust pan to keep the point under the mouse stationary
-            #pan_delta = world_pos_before - world_pos_after
-            #camera.pan .+= pan_delta .* camera.zoom
+            pan_delta = world_pos_before - world_pos_after
+            camera.pan .-= pan_delta .* camera.zoom
 
             request_animation_frame(1) # Request a frame render to show the change
         end
@@ -317,6 +317,8 @@ end
 
 function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
     q_values = values(mcts_tree.q)
+    min_q_value = minimum(q_values)
+    max_q_value = maximum(q_values)
     max_abs_q = isempty(q_values) ? 0.0 : maximum(abs.(q_values))
 
     # Helper functions
@@ -386,7 +388,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     mx, my = GLFW.GetCursorPos(window)
     is_hovering_canvas = true || CImGui.IsItemHovered()
 
-    if is_hovering_canvas && CImGui.IsMouseDown(1) # Right mouse button for panning
+    if is_hovering_canvas && CImGui.IsMouseDown(0) # Right mouse button for panning
         if !camera.panning
             camera.panning = true
         end
@@ -497,24 +499,30 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             if get_state(:color_code_q_values)[]
                 q_val = mcts_tree.q[node.index]
                 intensity = 0.0
-                if max_abs_q > 0
-                    intensity = abs(q_val) / max_abs_q
+                if max_q_value > 0
+                    intensity = (q_val - min_q_value) / (max_q_value - min_q_value)
                 end
+                #@info (;max_q_value, min_q_value, q_val, intensity)
 
                 color = Mirage.rgba(100, 100, 0, 255)
-                if q_val > 0
-                    color = Mirage.rgba(0, round(Int, 255 * intensity), 0, 255)
-                elseif q_val < 0
-                    color = Mirage.rgba(round(Int, 255 * intensity), 0, 0, 255)
-                end
-
-                Mirage.fillcolor(is_hovered ? Mirage.rgba(255, 255, 255, 255) : color)
+                rainbow = reverse([
+                    #(  0/255,  92/255, 230/255),  # blue
+                    (  0/255, 174/255, 239/255),  # cyan
+                    #(  0/255, 191/255, 165/255),  # teal green
+                    ( 68/255, 206/255,  27/255),  # green
+                    (187/255, 219/255,  68/255),  # lime
+                    (247/255, 227/255, 121/255),  # yellow
+                    (242/255, 161/255,  52/255),  # orange
+                    (255/255,  69/255,   0/255),  # red-orange
+                ])
+                color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(255, 255, 255, 255) : (color[1], color[2], color[3], 255))
             else
                 Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 0, 255) : Mirage.rgba(100, 100, 0, 255))
             end
         end
 
-        if is_hovered && CImGui.IsMouseClicked(0) && !camera.panning
+        if is_hovered && CImGui.IsMouseClicked(0) #&& !camera.panning
             if isempty(node.children)
                 if node.is_state
                     actions = get_actions_from_state_index(node.index)
@@ -641,6 +649,30 @@ function settings_window()
     CImGui.Begin("Settings")
     CImGui.Checkbox("Color code Q-values", get_state(:color_code_q_values))
     CImGui.End()
+end
+
+function interpolate_rgb(t::Float64, c1::Tuple, c2::Tuple)::Tuple
+    r = (1 - t) * c1[1] + t * c2[1]
+    g = (1 - t) * c1[2] + t * c2[2]
+    b = (1 - t) * c1[3] + t * c2[3]
+    return (r, g, b)
+end
+
+function interpolate_palette(t::Float64, colors)::Tuple
+    if length(colors) == 1
+        return colors[1]
+    end
+
+    t_clamped = clamp(t, 0.0, 1.0)
+
+    n = length(colors)
+    scaled_t = t_clamped * (n - 1)
+    idx = clamp(floor(Int, scaled_t), 0, n - 2)
+    local_t = scaled_t - idx
+
+    c1 = colors[idx + 1]
+    c2 = colors[idx + 2]
+    return interpolate_rgb(local_t, c1, c2)
 end
 
 # Define the state type for grid locations
