@@ -26,6 +26,7 @@ function initialize_application_state()
         :desired_distance => 32,
         :canvas_pos => CImGui.ImVec2(0,0),
         :canvas_size => CImGui.ImVec2(0,0),
+        :color_code_q_values => Ref(false),
     )
     return application_state
 end
@@ -257,6 +258,8 @@ function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
             dockspace_flags |= CImGui.ImGuiDockNodeFlags_AutoHideTabBar
             CImGui.DockSpace(dockspace_id, (0.0f0, 0.0f0), dockspace_flags)
 
+            settings_window()
+
             #CImGui.Text("Test: $test")
 
             node_id_counter = main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
@@ -313,6 +316,9 @@ function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
 end
 
 function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter)
+    q_values = values(mcts_tree.q)
+    max_abs_q = isempty(q_values) ? 0.0 : maximum(abs.(q_values))
+
     # Helper functions
     function get_actions_from_state_index(state_index::Int64)
         return (1 <= state_index <= length(mcts_tree.child_ids)) ? mcts_tree.child_ids[state_index] : Int[]
@@ -488,7 +494,24 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         if node.is_state
             Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
         else
-            Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 0, 255) : Mirage.rgba(100, 100, 0, 255))
+            if get_state(:color_code_q_values)[]
+                q_val = mcts_tree.q[node.index]
+                intensity = 0.0
+                if max_abs_q > 0
+                    intensity = abs(q_val) / max_abs_q
+                end
+
+                color = Mirage.rgba(100, 100, 0, 255)
+                if q_val > 0
+                    color = Mirage.rgba(0, round(Int, 255 * intensity), 0, 255)
+                elseif q_val < 0
+                    color = Mirage.rgba(round(Int, 255 * intensity), 0, 0, 255)
+                end
+
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(255, 255, 255, 255) : color)
+            else
+                Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 0, 255) : Mirage.rgba(100, 100, 0, 255))
+            end
         end
 
         if is_hovered && CImGui.IsMouseClicked(0) && !camera.panning
@@ -612,6 +635,12 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     )
 
     return node_id_counter
+end
+
+function settings_window()
+    CImGui.Begin("Settings")
+    CImGui.Checkbox("Color code Q-values", get_state(:color_code_q_values))
+    CImGui.End()
 end
 
 # Define the state type for grid locations
