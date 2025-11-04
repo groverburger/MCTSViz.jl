@@ -422,6 +422,9 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     force_vec = force_magnitude * normalize(delta_pos)
                     node_a.force += force_vec
                     node_b.force -= force_vec
+                else
+                    node_a.force += [1, 0]
+                    node_b.force -= [1, 0]
                 end
             end
         end
@@ -522,18 +525,24 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             end
         end
 
+        next_position(i, i_max) = [cos(i / i_max) * 40.0, sin(i / i_max) * 40.0] + (
+            node.position[1] == 0.0 && node.position[2] == 0.0
+            ? [0.0, 0.0]
+            : node.position + normalize(node.position) * 20
+        )
+
         if is_hovered && CImGui.IsMouseClicked(0) #&& !camera.panning
             if isempty(node.children)
                 if node.is_state
                     actions = get_actions_from_state_index(node.index)
-                    for action in actions
+                    for (a_idx, action) in enumerate(actions)
                         node_id_counter += 1
                         new_node = TreeNode(
                             text = string(mcts_tree.a_labels[action]),
                             is_state = false,
                             index = action,
                             parent = node,
-                            position = node.position + [rand(-20.0:20.0), rand(-20.0:20.0)],
+                            position = next_position(a_idx, length(actions)),
                             id = node_id_counter
                         )
                         push!(node.children, new_node)
@@ -547,7 +556,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                             text = string(mcts_tree.s_labels[state]),
                             index = state,
                             parent = node,
-                            position = node.position + [rand(-20.0:20.0), rand(-20.0:20.0)],
+                            position = next_position(0, 1),
                             id = node_id_counter
                         )
                         push!(node.children, new_node)
