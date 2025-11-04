@@ -70,7 +70,7 @@ mutable struct Camera
     zoom::Float64
 end
 
-function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
+function main(mdp, mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
     if !GLFW.Init()
         @error "Failed to initialize GLFW"
         return
@@ -194,7 +194,7 @@ function main(mcts_tree::MCTS.MCTSTree; keep_state::Bool = true)
         ? merge(application_state, prev_application_state)
         : application_state
     )
-
+    set_state(:mdp, mdp)
     set_state(:first_frame, true)
     canvas::Mirage.Canvas = Mirage.create_canvas(100, 100)
 
@@ -553,15 +553,58 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             Mirage.fill()
         end
 
+        local text_to_render = node.text
+        if node.is_state
+            s_idx = node.index
+            if 1 <= s_idx <= length(mcts_tree.n) && !isempty(get(mcts_tree.n, s_idx, Dict()))
+                visits = sum(values(mcts_tree.n[s_idx]))
+                text_to_render = "$(node.text)
+N: $(visits)"
+            end
+        end
+            #=
+        else # action node
+            if node.parent !== nothing
+                s_idx = node.parent.index
+                a_idx = node.index
+                if 1 <= s_idx <= length(mcts_tree.n) && haskey(mcts_tree.n, a_idx)
+                    visits = mcts_tree.n[s_idx][a_idx]
+                    q_value = mcts_tree.q[s_idx][a_idx]
+                    text_to_render = "$(node.text)
+N: $(visits)
+Q: $(round(q_value, digits=2))"
+                end
+            end
+        end
+        =#
+
         Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
         Mirage.scale(1 / camera.zoom)
         
         # Estimate text size and center it
         font_size = 16
-        text_width = length(node.text) * (font_size * 0.5)
-        Mirage.translate(-text_width / 2, -font_size / 3)
+        lines = split(text_to_render, '
+')
+        max_width = 0
+        for line in lines
+            max_width = max(max_width, length(line))
+        end
+        text_width = max_width * (font_size * 0.5)
+        text_height = length(lines) * font_size
+        
+        # Adjust for multi-line text
+        Mirage.translate(-text_width / 2, -text_height/2 + font_size/2)
 
-        Mirage.text(node.text)
+        # Render each line of text
+        for (i, line) in enumerate(lines)
+            line_width = length(line) * (font_size * 0.5)
+            Mirage.save()
+            # Center each line horizontally
+            Mirage.translate((text_width - line_width) / 2, (i-1) * font_size)
+            Mirage.text(string(line))
+            Mirage.restore()
+        end
+
         Mirage.restore()
     end
 
@@ -705,7 +748,6 @@ POMDPs.discount(mdp::GridWorldMDP) = mdp.discount_factor
 function test()
     # Create an instance of the problem
     mdp = GridWorldMDP()
-    set_state(:mdp, mdp)
 
     function callback(planner::MCTS.MCTSPlanner, i::Int64)
         if i == 5
@@ -725,7 +767,7 @@ function test()
     #@info mcts_policy.tree.s_labels
     #@info rand(initialstate(mdp))
 
-    main(mcts_policy.tree)
+    main(mdp, mcts_policy.tree)
 
     #@info mcts_policy.tree.s_labels[1]
     #@info mcts_policy.tree.child_ids[1]
@@ -734,6 +776,6 @@ function test()
     #@info get_actions_from_state(s)[1] |> get_state_from_action |> get_actions_from_state_index
 end
 
-export main
+export main, test
 
 end # module MCTSViz
