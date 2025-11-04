@@ -409,7 +409,6 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                 delta_pos = node_a.position - node_b.position
                 distance_sq = sum(delta_pos.^2)
                 if distance_sq > 1.0 # Avoid extreme forces at very close distances
-
                     force_magnitude = repulsion_strength * (get_state(:desired_distance)[]^2) / distance_sq
                     #force_magnitude = repulsion_strength / distance_sq
                     force_vec = force_magnitude * normalize(delta_pos)
@@ -440,13 +439,15 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
 
             node.velocity += node.force * delta_time
             node.velocity *= damping
+            #node.velocity[2] = 0
             node.position += node.velocity * delta_time
         end
     end
 
-    update_physics(all_nodes, delta_time)
+    for i in 1:6
+        update_physics(all_nodes, 3 / 60)
+    end
     request_animation_frame(1)
-
 
     # Rendering
     Mirage.resize!(canvas, max(1, Int(trunc(canvas_size.x))), max(1, Int(trunc(canvas_size.y))))
@@ -482,13 +483,12 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         world_mouse_pos = (relative_mouse .- camera.pan) ./ camera.zoom
         
         # Make hover radius constant in screen space by scaling it in world space
-        hover_radius_world = 24 / camera.zoom
-        is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= hover_radius_world
+        is_hovered = hypot(node.position[1] - world_mouse_pos[1], node.position[2] - world_mouse_pos[2]) <= 24
 
         if node.is_state
             Mirage.fillcolor(is_hovered ? Mirage.rgba(0, 0, 180, 255) : Mirage.rgba(0, 0, 80, 255))
         else
-            Mirage.fillcolor(is_hovered ? Mirage.rgba(200, 200, 0, 255) : Mirage.rgba(155, 155, 0, 255))
+            Mirage.fillcolor(is_hovered ? Mirage.rgba(155, 155, 0, 255) : Mirage.rgba(100, 100, 0, 255))
         end
 
         if is_hovered && CImGui.IsMouseClicked(0) && !camera.panning
@@ -556,27 +556,16 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         local text_to_render = node.text
         if node.is_state
             s_idx = node.index
-            if 1 <= s_idx <= length(mcts_tree.n) && !isempty(get(mcts_tree.n, s_idx, Dict()))
-                visits = sum(values(mcts_tree.n[s_idx]))
-                text_to_render = "$(node.text)
-N: $(visits)"
-            end
+            state = mcts_tree.s_labels[s_idx]
+            visits = mcts_tree.total_n[s_idx]
+            text_to_render = "$(node.text)\nN: $(visits)"
+        else
+            a_idx = node.index
+            action = mcts_tree.a_labels[a_idx]
+            visits = mcts_tree.n[a_idx]
+            v_val = round(mcts_tree.q[a_idx], digits=3)
+            text_to_render = "a: $(action)\nN: $visits, Q: $v_val"
         end
-            #=
-        else # action node
-            if node.parent !== nothing
-                s_idx = node.parent.index
-                a_idx = node.index
-                if 1 <= s_idx <= length(mcts_tree.n) && haskey(mcts_tree.n, a_idx)
-                    visits = mcts_tree.n[s_idx][a_idx]
-                    q_value = mcts_tree.q[s_idx][a_idx]
-                    text_to_render = "$(node.text)
-N: $(visits)
-Q: $(round(q_value, digits=2))"
-                end
-            end
-        end
-        =#
 
         Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
         Mirage.scale(1 / camera.zoom)
@@ -589,7 +578,7 @@ Q: $(round(q_value, digits=2))"
         for line in lines
             max_width = max(max_width, length(line))
         end
-        text_width = max_width * (font_size * 0.5)
+        text_width = max_width * font_size / 2
         text_height = length(lines) * font_size
         
         # Adjust for multi-line text
@@ -597,10 +586,10 @@ Q: $(round(q_value, digits=2))"
 
         # Render each line of text
         for (i, line) in enumerate(lines)
-            line_width = length(line) * (font_size * 0.5)
+            line_width = length(line) * font_size / 2
             Mirage.save()
             # Center each line horizontally
-            Mirage.translate((text_width - line_width) / 2, (i-1) * font_size)
+            Mirage.translate(round((text_width - line_width) / 2), round((i-1) * font_size))
             Mirage.text(string(line))
             Mirage.restore()
         end
