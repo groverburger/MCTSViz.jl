@@ -124,17 +124,24 @@ function example_mdp()
 
     function callback(planner::MCTS.MCTSPlanner, i::Int64)
         if i == 5
-            @info planner.tree
+            @info mcts_ascii_viz(planner.tree)
         end
     end
 
     # Solve using MCTS
-    solver = MCTSSolver(;n_iterations=1000, depth=20, exploration_constant=10.0, callback, enable_tree_vis=true)
+    solver = MCTSSolver(;
+        n_iterations=1000,
+        depth=20,
+        exploration_constant=10.0,
+        #callback,
+        enable_tree_vis=true
+    )
     mcts_policy = solve(solver, mdp)
 
     # Example usage
     s = GridWorldState(5, 5)
     println(action(mcts_policy, s))  # Returns the suggested action for state (9, 2)
 
+    @info mcts_ascii_viz(mcts_policy.tree)
     mcts_viz(mdp, mcts_policy)
 end
