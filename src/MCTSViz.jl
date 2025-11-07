@@ -637,7 +637,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                 color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
                 Mirage.fillcolor((color[1], color[2], color[3], 255))
             else
-                Mirage.fillcolor((0, 0, 80, 255))
+                Mirage.fillcolor(Mirage.rgba(0, 0, 200, 255))
             end
         else
             if get_state(:color_code_q_values)[]
@@ -662,7 +662,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                 color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
                 Mirage.fillcolor((color[1], color[2], color[3], 255))
             else
-                Mirage.fillcolor((100, 100, 0, 255))
+                Mirage.fillcolor(Mirage.rgba(150, 150, 0, 255))
             end
         end
 
@@ -821,7 +821,10 @@ N: $visits, Q: $v_val"
                 text_height = length(lines) * font_size
                 
                 if is_hovered
-                    Mirage.translate(world_mouse_pos[1] - node.position[1] - text_width / 2, world_mouse_pos[2] - node.position[2] - text_height - 10)
+                    Mirage.translate(
+                        (world_mouse_pos[1] - node.position[1]) * camera.zoom - text_width / 2,
+                        (world_mouse_pos[2] - node.position[2]) * camera.zoom - text_height - 10
+                    )
                 else
                     # Adjust for multi-line text
                     Mirage.translate(-text_width / 2, -text_height/2 + font_size/2)
