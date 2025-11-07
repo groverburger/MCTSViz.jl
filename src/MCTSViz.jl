@@ -62,7 +62,7 @@ end
     text::String = ""
     is_state::Bool = true
     index::Int = 0
-    parent::Union{TreeNode, Nothing} = nothing
+    parents::Vector{TreeNode} = []
     children::Vector{TreeNode} = []
     id::Int = 0
 end
@@ -331,6 +331,8 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     min_n_value = minimum(n_values)
     max_n_value = maximum(n_values)
 
+    state_node_map = Dict{Int, TreeNode}(map(n -> n.index => n, filter(n -> n.is_state, all_nodes)))
+
     # Helper functions
     function get_actions_from_state_index(state_index::Int64)
         return (1 <= state_index <= length(mcts_tree.child_ids)) ? mcts_tree.child_ids[state_index] : Int[]
@@ -381,7 +383,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             return Int[]
         end
 
-        # Find the index of the most likely state in the tree\'s s_labels
+        # Find the index of the most likely state in the tree's s_labels
         idx = findfirst(isequal(best_s), mcts_tree.s_labels)
         if idx !== nothing
             return [idx]
@@ -410,7 +412,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                         text = string(mcts_tree.a_labels[action]),
                         is_state = false,
                         index = action,
-                        parent = node,
+                        parents = [node],
                         position = next_position(a_idx, length(actions)),
                         id = node_id_counter
                     )
@@ -419,18 +421,30 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     expand_node(new_node, levels - 1)
                 end
             else # is action node
-                states = find_next_states(node.parent.index, node.index)
+                @assert !isempty(node.parents) "Action node should have at least one parent"
+                states = find_next_states(node.parents[1].index, node.index)
                 for state in states
-                    node_id_counter += 1
-                    new_node = TreeNode(
-                        text = string(mcts_tree.s_labels[state]),
-                        index = state,
-                        parent = node,
-                        position = next_position(0, 1),
-                        id = node_id_counter
-                    )
-                    push!(node.children, new_node)
-                    push!(all_nodes, new_node)
+                    if haskey(state_node_map, state)
+                        new_node = state_node_map[state]
+                        if !(node in new_node.parents)
+                            push!(new_node.parents, node)
+                        end
+                    else
+                        node_id_counter += 1
+                        new_node = TreeNode(
+                            text = string(mcts_tree.s_labels[state]),
+                            index = state,
+                            parents = [node],
+                            position = next_position(0, 1),
+                            id = node_id_counter
+                        )
+                        state_node_map[state] = new_node
+                        push!(all_nodes, new_node)
+                    end
+
+                    if !(new_node in node.children)
+                        push!(node.children, new_node)
+                    end
                     expand_node(new_node, levels - 1)
                 end
             end
@@ -493,11 +507,13 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
 
         # Attraction
         for node in nodes
-            if node.parent !== nothing
-                delta_pos = node.parent.position - node.position
-                force = attraction_strength * delta_pos
-                node.force += force
-                node.parent.force -= force
+            if !isempty(node.parents)
+                for parent in node.parents
+                    delta_pos = parent.position - node.position
+                    force = attraction_strength * delta_pos
+                    node.force += force
+                    parent.force -= force
+                end
             end
         end
 
@@ -570,12 +586,16 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
         Mirage.stroke()
     end
 
-    function draw_connections(node)
+    function draw_connections(node, visited=Set())
+        if node in visited
+            return
+        end
+        push!(visited, node)
         for child in node.children
             Mirage.strokecolor(Mirage.rgba(255, 255, 255, 50))
             Mirage.strokewidth(1.5)
             draw_arrow(node.position, child.position, 10.0, pi/6, 24.0)
-            draw_connections(child)
+            draw_connections(child, visited)
         end
     end
     Mirage.save()
@@ -662,7 +682,7 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                             text = string(mcts_tree.a_labels[action]),
                             is_state = false,
                             index = action,
-                            parent = node,
+                            parents = [node],
                             position = next_position(a_idx, length(actions)),
                             id = node_id_counter
                         )
@@ -670,29 +690,55 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                         push!(all_nodes, new_node)
                     end
                 else # is action node
-                    states = find_next_states(node.parent.index, node.index)
+                    @assert !isempty(node.parents) "Action node should have at least one parent"
+                    states = find_next_states(node.parents[1].index, node.index)
                     for state in states
-                        node_id_counter += 1
-                        new_node = TreeNode(
-                            text = string(mcts_tree.s_labels[state]),
-                            index = state,
-                            parent = node,
-                            position = next_position(0, 1),
-                            id = node_id_counter
-                        )
-                        push!(node.children, new_node)
-                        push!(all_nodes, new_node)
+                        if haskey(state_node_map, state)
+                            new_node = state_node_map[state]
+                            if !(node in new_node.parents)
+                                push!(new_node.parents, node)
+                            end
+                        else
+                            node_id_counter += 1
+                            new_node = TreeNode(
+                                text = string(mcts_tree.s_labels[state]),
+                                index = state,
+                                parents = [node],
+                                position = next_position(0, 1),
+                                id = node_id_counter
+                            )
+                            state_node_map[state] = new_node
+                            push!(all_nodes, new_node)
+                        end
+                        if !(new_node in node.children)
+                            push!(node.children, new_node)
+                        end
                     end
                 end
             else
-                function delete_children_recursive(n)
-                    for child in n.children
-                        delete_children_recursive(child)
-                        filter!(x -> x.id != child.id, all_nodes)
+                function delete_children_recursive(n, visited)
+                    if n in visited
+                        return
                     end
+                    push!(visited, n)
+
+                    children_to_process = copy(n.children)
                     empty!(n.children)
+
+                    for child in children_to_process
+                        filter!(p -> p.id != n.id, child.parents)
+                        
+                        if isempty(child.parents)
+                            delete_children_recursive(child, visited)
+
+                            filter!(x -> x.id != child.id, all_nodes)
+                            if child.is_state
+                                delete!(state_node_map, child.index)
+                            end
+                        end
+                    end
                 end
-                delete_children_recursive(node)
+                delete_children_recursive(node, Set())
             end
             request_animation_frame(10)
         end
@@ -746,13 +792,15 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     s_idx = node.index
                     state = mcts_tree.s_labels[s_idx]
                     visits = mcts_tree.total_n[s_idx]
-                    text_to_render = "$(node.text)\nN: $(visits)"
+                    text_to_render = "$(node.text)
+N: $(visits)"
                 else
                     a_idx = node.index
                     action = mcts_tree.a_labels[a_idx]
                     visits = mcts_tree.n[a_idx]
                     v_val = round(mcts_tree.q[a_idx], digits=3)
-                    text_to_render = "a: $(action)\nN: $visits, Q: $v_val"
+                    text_to_render = "a: $(action)
+N: $visits, Q: $v_val"
                 end
 
                 Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
@@ -760,7 +808,8 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                 
                 # Estimate text size and center it
                 font_size = 16
-                lines = split(text_to_render, '\n')
+                lines = split(text_to_render, '
+')
                 max_width = 0
                 for line in lines
                     max_width = max(max_width, length(line))
