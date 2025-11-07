@@ -729,6 +729,9 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                         filter!(p -> p.id != n.id, child.parents)
                         
                         if isempty(child.parents)
+                            if child.id == 1 # Do not delete the root node
+                                continue
+                            end
                             delete_children_recursive(child, visited)
 
                             filter!(x -> x.id != child.id, all_nodes)
