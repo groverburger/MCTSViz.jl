@@ -4,7 +4,7 @@ A visualization tool for Monte Carlo Tree Search (MCTS) solver trees from [MCTS.
 
 This tool provides an interactive GUI to explore the MCTS tree, inspect node properties (like Q-values and visit counts), and understand the solver's decision-making process.
 
-![MCTSViz Example GIF](https://github.com/user-attachments/assets/954c8b42-f407-4cd2-aabf-7b5a728b0113)
+![MCTSViz Image](https://github.com/user-attachments/assets/bd717470-62fc-4e6c-98a4-db80b66272f5)
 
 ## Usage
 
@@ -28,6 +28,8 @@ This will open a window displaying the MCTS tree, which you can pan, zoom, and i
 The project includes an example using a simple GridWorld MDP. You can run this example to see the visualizer in action.
 
 The file `src/example_mdp.jl` contains the `GridWorldMDP` definition and an `example_mdp()` function that sets up and runs the visualization.
+
+![MCTSViz Example GIF](https://github.com/user-attachments/assets/954c8b42-f407-4cd2-aabf-7b5a728b0113)
 
 To run the example:
 
