@@ -994,6 +994,11 @@ end
 
 include("./example_mdp.jl")
 
+function @main(args::Vector{String})::Cint
+    example_mdp()
+    return 0
+end
+
 export mcts_viz, mcts_ascii_viz, example_mdp
 
 end # module MCTSViz
