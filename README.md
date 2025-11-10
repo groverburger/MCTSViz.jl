@@ -4,9 +4,7 @@ A visualization tool for Monte Carlo Tree Search (MCTS) solver trees from [MCTS.
 
 This tool provides an interactive GUI to explore the MCTS tree, inspect node properties (like Q-values and visit counts), and understand the solver's decision-making process.
 
-![Image](https://github.com/user-attachments/assets/019669c1-de09-42e2-8a84-ad34ce0f2ad0)
-
-![Image](https://github.com/user-attachments/assets/954c8b42-f407-4cd2-aabf-7b5a728b0113)
+![MCTSViz Example GIF](https://github.com/user-attachments/assets/954c8b42-f407-4cd2-aabf-7b5a728b0113)
 
 ## Usage
 
