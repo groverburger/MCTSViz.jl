@@ -67,13 +67,52 @@ end
     id::Int = 0
 end
 
+mutable struct SpatialHashGrid
+    cell_size::Float64
+    cells::Dict{Tuple{Int, Int}, Vector{TreeNode}}
+end
+
+function SpatialHashGrid(cell_size::Float64)
+    return SpatialHashGrid(cell_size, Dict{Tuple{Int, Int}, Vector{TreeNode}}())
+end
+
+function get_cell_coords(grid::SpatialHashGrid, position::Vector{Float64})
+    return (floor(Int, position[1] / grid.cell_size), floor(Int, position[2] / grid.cell_size))
+end
+
+function insert!(grid::SpatialHashGrid, node::TreeNode)
+    coords = get_cell_coords(grid, node.position)
+    if !haskey(grid.cells, coords)
+        grid.cells[coords] = []
+    end
+    push!(grid.cells[coords], node)
+end
+
+function get_neighbors(grid::SpatialHashGrid, node::TreeNode)
+    neighbors = TreeNode[]
+    center_coords = get_cell_coords(grid, node.position)
+    for i in -1:1
+        for j in -1:1
+            neighbor_coords = (center_coords[1] + i, center_coords[2] + j)
+            if haskey(grid.cells, neighbor_coords)
+                for neighbor_node in grid.cells[neighbor_coords]
+                    if neighbor_node.id != node.id
+                        push!(neighbors, neighbor_node)
+                    end
+                end
+            end
+        end
+    end
+    return neighbors
+end
+
 mutable struct Camera
     pan::Vector{Float64}
     panning::Bool
     zoom::Float64
 end
 
-function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 3)
+function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 10)
     mcts_tree = mcts_policy.tree
 
     if !GLFW.Init()
@@ -485,22 +524,30 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
             node.force = [0.0, 0.0]
         end
 
+        # Build spatial hash grid
+        grid_cell_size = get_state(:desired_distance)[] * 6.0
+        grid = SpatialHashGrid(grid_cell_size)
+        for node in nodes
+            insert!(grid, node)
+        end
+
         # Repulsion
-        for i in 1:length(nodes)
-            for j in (i+1):length(nodes)
-                node_a = nodes[i]
-                node_b = nodes[j]
-                delta_pos = node_a.position - node_b.position
-                distance_sq = sum(delta_pos.^2)
-                if distance_sq > 1.0 # Avoid extreme forces at very close distances
-                    force_magnitude = repulsion_strength * (get_state(:desired_distance)[]^2) / distance_sq
-                    #force_magnitude = repulsion_strength / distance_sq
-                    force_vec = force_magnitude * normalize(delta_pos)
-                    node_a.force += force_vec
-                    node_b.force -= force_vec
-                else
-                    node_a.force += [1, 0]
-                    node_b.force -= [1, 0]
+        for node_a in nodes
+            for node_b in get_neighbors(grid, node_a)
+                if node_a.id < node_b.id
+                    delta_pos = node_a.position - node_b.position
+                    distance_sq = sum(delta_pos.^2)
+                    if distance_sq > 1.0 # Avoid extreme forces at very close distances
+                        force_magnitude = repulsion_strength * (get_state(:desired_distance)[]^2) / distance_sq
+                        force_vec = force_magnitude * normalize(delta_pos)
+                        node_a.force += force_vec
+                        node_b.force -= force_vec
+                    else
+                        # Apply a small fixed force to push nodes apart if they are on top of each other
+                        force_vec = [1.0, 0.0]
+                        node_a.force += force_vec
+                        node_b.force -= force_vec
+                    end
                 end
             end
         end
