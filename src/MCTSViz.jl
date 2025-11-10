@@ -649,6 +649,37 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     draw_connections(root_node)
     Mirage.restore()
 
+    function delete_unreachable_nodes(root_node, all_nodes, state_node_map)
+        # Find all nodes reachable from the root
+        reachable_nodes = Set{TreeNode}()
+        q = [root_node]
+        push!(reachable_nodes, root_node)
+        
+        head = 1
+        while head <= length(q)
+            curr = q[head]
+            head += 1
+            
+            for child in curr.children
+                if !(child in reachable_nodes)
+                    push!(reachable_nodes, child)
+                    push!(q, child)
+                end
+            end
+        end
+
+        # Filter all_nodes and state_node_map
+        filter!(n -> n in reachable_nodes, all_nodes)
+        
+        # Rebuild state_node_map from the filtered all_nodes
+        empty!(state_node_map)
+        for n in all_nodes
+            if n.is_state
+                state_node_map[n.index] = n
+            end
+        end
+    end
+
     # Draw nodes and handle clicks
     for node in copy(all_nodes)
         Mirage.save()
@@ -763,32 +794,16 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
                     end
                 end
             else
-                function delete_children_recursive(n, visited)
-                    if n in visited
-                        return
-                    end
-                    push!(visited, n)
+                # Sever connections from the clicked node to its children
+                children_to_process = copy(node.children)
+                empty!(node.children)
 
-                    children_to_process = copy(n.children)
-                    empty!(n.children)
-
-                    for child in children_to_process
-                        filter!(p -> p.id != n.id, child.parents)
-                        
-                        if isempty(child.parents)
-                            if child.id == 1 # Do not delete the root node
-                                continue
-                            end
-                            delete_children_recursive(child, visited)
-
-                            filter!(x -> x.id != child.id, all_nodes)
-                            if child.is_state
-                                delete!(state_node_map, child.index)
-                            end
-                        end
-                    end
+                for child in children_to_process
+                    filter!(p -> p.id != node.id, child.parents)
                 end
-                delete_children_recursive(node, Set())
+
+                # Garbage collect nodes that are no longer reachable
+                delete_unreachable_nodes(root_node, all_nodes, state_node_map)
             end
             request_animation_frame(10)
         end
