@@ -112,7 +112,7 @@ mutable struct Camera
     zoom::Float64
 end
 
-function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 10)
+function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 3)
     mcts_tree = mcts_policy.tree
 
     if !GLFW.Init()
