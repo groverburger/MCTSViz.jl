@@ -1074,8 +1074,8 @@ version = "0.8.1"
 
 [[deps.Mirage]]
 deps = ["FileIO", "GLFW", "ImageIO", "Images", "ModernGL", "Revise"]
-git-tree-sha1 = "18b0ce1807c85cd8eb218ae7f5ba11ff4b2f1ac8"
-repo-rev = "e91d9c725a56cd88b0aea24135741e1e64b537a3"
+git-tree-sha1 = "d9f3776ba3ffef83c6d296c8c2a09ddacab6a8d5"
+repo-rev = "master"
 repo-url = "https://github.com/groverburger/Mirage.jl.git"
 uuid = "e54eaeca-a684-404c-9867-c26beaca1479"
 version = "0.1.0"
