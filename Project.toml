@@ -17,7 +17,7 @@ Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
 [compat]
 CImGui = "6.2.1"
 GLFW = "3.4.5"
-LinearAlgebra = "1.12.0"
+LinearAlgebra = "1.11"
 MCTS = "0.5.7"
 Mirage = "0.1.0"
 ModernGL = "1.1.8"

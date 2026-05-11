@@ -1056,7 +1056,7 @@ end
 
 include("./example_mdp.jl")
 
-function @main(args::Vector{String})::Cint
+function (@main)(args::Vector{String})::Cint
     example_mdp()
     return 0
 end
