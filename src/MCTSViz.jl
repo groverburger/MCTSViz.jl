@@ -2,13 +2,15 @@ module MCTSViz
 
 using Revise
 using GLFW
-using ModernGL
 using CImGui
 using LinearAlgebra: normalize
 import Mirage
 using POMDPs
 using MCTS
 using POMDPTools
+
+include("MirageImGuiApps.jl")
+using .MirageImGuiApps
 
 global application_state::Dict{Symbol, Any} = Dict()
 function initialize_application_state()
@@ -50,9 +52,13 @@ function set_state(key::Symbol, value::Any)
     return application_state[key]
 end
 
+const current_app = Ref{Union{Nothing, MirageImGuiApp}}(nothing)
 requested_animation_frames = 0
 function request_animation_frame(frames::Int64 = 1)
     global requested_animation_frames = frames
+    if current_app[] !== nothing
+        request_frame!(current_app[], frames)
+    end
 end
 
 @kwdef mutable struct TreeNode
@@ -114,123 +120,9 @@ end
 
 function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 3)
     mcts_tree = mcts_policy.tree
-
-    if !GLFW.Init()
-        @error "Failed to initialize GLFW"
-        return
-    end
-
-    @static if Sys.isapple()
-        glsl_version_str = "#version 150"
-        GLFW.WindowHint(GLFW.CONTEXT_VERSION_MAJOR, 3)
-        GLFW.WindowHint(GLFW.CONTEXT_VERSION_MINOR, 2)
-        GLFW.WindowHint(GLFW.OPENGL_PROFILE, GLFW.OPENGL_CORE_PROFILE)
-        GLFW.WindowHint(GLFW.OPENGL_FORWARD_COMPAT, GL_TRUE)
-    else
-        glsl_version_str = "#version 130"
-        GLFW.WindowHint(GLFW.CONTEXT_VERSION_MAJOR, 3)
-        GLFW.WindowHint(GLFW.CONTEXT_VERSION_MINOR, 0)
-    end
-
-    window = GLFW.CreateWindow(1200, 800, "MCTSViz")
-    @assert window.handle != C_NULL "Could not create a GLFW window 😢"
-    GLFW.MakeContextCurrent(window)
-    GLFW.SwapInterval(1) # Enable VSync
-
-    Mirage.initialize_render_context()
-
-    imgui_ctx = CImGui.CreateContext()
-    io = CImGui.GetIO()
-    io.ConfigFlags = unsafe_load(io.ConfigFlags) | CImGui.ImGuiConfigFlags_NavEnableKeyboard
-    io.ConfigFlags = unsafe_load(io.ConfigFlags) | CImGui.ImGuiConfigFlags_DockingEnable
-
-    try
-        if !isdefined(CImGui, :ImGui_ImplGlfw_InitForOpenGL)
-            error("ImGui_ImplGlfw_InitForOpenGL not found in CImGui namespace")
-        end
-        if !isdefined(CImGui, :ImGui_ImplOpenGL3_Init)
-            error("ImGui_ImplOpenGL3_Init not found in CImGui namespace")
-        end
-
-        if !CImGui.ImGui_ImplGlfw_InitForOpenGL(window.handle, true)
-            @error "Failed to initialize ImGui GLFW backend!"
-            error("ImGui GLFW Init failed") # Throw to be caught below
-        end
-        if !CImGui.ImGui_ImplOpenGL3_Init(glsl_version_str)
-            @error "Failed to initialize ImGui OpenGL3 backend!"
-            error("ImGui OpenGL3 Init failed") # Throw to be caught below
-        end
-    catch e
-        @error "Failed to initialize ImGui GLFW/OpenGL Implementation" exception=(e, catch_backtrace())
-        CImGui.DestroyContext(imgui_ctx)
-        GLFW.DestroyWindow(window)
-        GLFW.Terminate()
-        return
-    end
-
-    # Setup Dear ImGui style
-    CImGui.StyleColorsDark()
-
-    # Initialize camera with zoom
+    app = MirageImGuiApp("MCTSViz"; width = 1200, height = 800)
+    current_app[] = app
     camera = Camera([0.0, 0.0], false, 1.0)
-
-    # Setup scroll callback for zooming
-    scroll_callback = (win, xoffset, yoffset) -> begin
-        io = CImGui.GetIO()
-        # Only zoom if the mouse is not over an ImGui window
-        if !unsafe_load(io.WantCaptureMouse)
-            # Get canvas and mouse properties
-            canvas_pos = get_state(:canvas_pos)
-            canvas_size = get_state(:canvas_size)
-            mx, my = GLFW.GetCursorPos(window)
-            mouse_screen = [mx, my]
-
-            # Helper to convert screen coordinates to world coordinates
-            function screen_to_world(screen, pan, zoom, cpos, csize)
-                # Mouse relative to canvas center
-                relative_mouse = [screen[1] - cpos.x - csize.x/2, screen[2] - cpos.y - csize.y/2]
-                # Account for pan and zoom
-                world_pos = (relative_mouse .- pan) ./ zoom
-                return world_pos
-            end
-
-            world_pos_before = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
-
-            # Update zoom
-            camera.zoom *= (1.0 + yoffset * 0.1)
-            camera.zoom = clamp(camera.zoom, 0.1, 10.0) # Clamp zoom level
-
-            world_pos_after = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
-
-            # Adjust pan to keep the point under the mouse stationary
-            pan_delta = world_pos_before - world_pos_after
-            camera.pan .-= pan_delta .* camera.zoom
-
-            request_animation_frame(1) # Request a frame render to show the change
-        end
-    end
-    GLFW.SetScrollCallback(window, scroll_callback)
-
-    dpi = begin
-        monitor = GLFW.GetPrimaryMonitor()
-        xscale, yscale = GLFW.GetMonitorContentScale(monitor)
-        (xscale + yscale) / 2
-    end
-
-    # Special case, apple does have high dpi but handles it
-    # automatically for us in practice
-    if Sys.isapple()
-        dpi = 1
-    end
-
-    #=
-    fonts_dir = "fonts"
-    fonts = unsafe_load(CImGui.GetIO().Fonts)
-    try
-        CImGui.AddFontFromFileTTF(fonts, joinpath(fonts_dir, "Roboto-Regular.ttf"), 18 * dpi)
-        CImGui.ScaleAllSizes(CImGui.GetStyle(), dpi)
-    catch _ end
-    =#
 
     global application_state
     prev_application_state = application_state
@@ -242,89 +134,36 @@ function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int 
     )
     set_state(:mdp, mdp)
     set_state(:first_frame, true)
-    canvas::Mirage.Canvas = Mirage.create_canvas(100, 100)
-
     
     root_node = TreeNode(text = string(mcts_tree.s_labels[1]), index = 1, id = 1)
     node_id_counter = 1
     all_nodes = [root_node]
+    request_frame!(app, 10)
 
-    last_frame_time = time()
-    try # Wrap main loop in try/finally for cleanup
-        while !GLFW.WindowShouldClose(window)
-            current_frame_time = time()
-            delta_time = min(1/30, current_frame_time - last_frame_time)
-            last_frame_time = current_frame_time
-
-            global requested_animation_frames
-            if requested_animation_frames > 0
-                GLFW.PollEvents()
-                requested_animation_frames -= 1
-            else
-                GLFW.WaitEvents()
-            end
-
-            # Clear the main framebuffer
-            glBindFramebuffer(GL_FRAMEBUFFER, 0)
-            glViewport(0, 0, GLFW.GetFramebufferSize(window)...)
-            glClearColor(0.3, 0.3, 0.32, 1.0)
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)
-
-            # Start ImGui frame
-            CImGui.ImGui_ImplOpenGL3_NewFrame()
-            CImGui.ImGui_ImplGlfw_NewFrame()
-            CImGui.NewFrame()
-
-            # Set up the dockspace
-            viewport = CImGui.GetMainViewport()
-            #window_flags = CImGui.ImGuiWindowFlags_MenuBar | CImGui.ImGuiWindowFlags_NoDocking
-            window_flags = CImGui.ImGuiWindowFlags_NoTitleBar | CImGui.ImGuiWindowFlags_NoCollapse
-            window_flags |= CImGui.ImGuiWindowFlags_NoResize | CImGui.ImGuiWindowFlags_NoMove
-            window_flags |= CImGui.ImGuiWindowFlags_NoBringToFrontOnFocus | CImGui.ImGuiWindowFlags_NoNavFocus
-            window_flags |= CImGui.ImGuiWindowFlags_NoBackground
-
-            # Position window over entire viewport
-            CImGui.SetNextWindowPos(unsafe_load(viewport.Pos))
-            CImGui.SetNextWindowSize(unsafe_load(viewport.Size))
-            CImGui.SetNextWindowViewport(unsafe_load(viewport.ID))
-
-            # Remove window padding/border
-            CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowRounding, 0.0f0)
-            CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowBorderSize, 0.0f0)
-            CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowPadding, (0.0f0, 0.0f0))
-
-            # Begin the dockspace window
-            CImGui.Begin("DockSpace", C_NULL, window_flags)
-            CImGui.PopStyleVar(3)
-
-            # Create the actual dockspace
-            dockspace_id = CImGui.GetID("MyDockSpace")
-            dockspace_flags = CImGui.ImGuiDockNodeFlags_PassthruCentralNode
-            dockspace_flags |= CImGui.ImGuiDockNodeFlags_AutoHideTabBar
-            CImGui.DockSpace(dockspace_id, (0.0f0, 0.0f0), dockspace_flags)
-
+    try
+        run!(app) do app
             settings_window()
-
-            #CImGui.Text("Test: $test")
-
-            node_id_counter = main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
-            #mcts_tree_visual_window(mcts_canvas, window)
-            #pomcpow_tree_visual_window(mcts_canvas, window)
-
-            CImGui.End()
-            CImGui.Render()
-            CImGui.ImGui_ImplOpenGL3_RenderDrawData(CImGui.GetDrawData())
-
-            # Handle multi-viewports / docking if enabled
-            if unsafe_load(io.ConfigFlags) & CImGui.ImGuiConfigFlags_ViewportsEnable == CImGui.ImGuiConfigFlags_ViewportsEnable
-                backup_current_context = GLFW.GetCurrentContext()
-                CImGui.UpdatePlatformWindows()
-                CImGui.RenderPlatformWindowsDefault()
-                GLFW.MakeContextCurrent(backup_current_context)
+            CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowPadding, (0.0f0, 0.0f0))
+            CImGui.Begin("Tree View")
+            CImGui.PopStyleVar()
+            try
+                draw_canvas!(app, :mcts_tree; label = "mcts_tree_canvas") do canvas, viewport
+                    node_id_counter = main_view(
+                        canvas,
+                        app.window,
+                        viewport,
+                        mcts_tree,
+                        root_node,
+                        all_nodes,
+                        camera,
+                        app.delta_time,
+                        node_id_counter,
+                        expand_levels,
+                    )
+                end
+            finally
+                CImGui.End()
             end
-
-            # Buffer animation frames for mouse events. This is a
-            # stupid hack, but it works pretty well
             if CImGui.IsMouseClicked(0) || CImGui.IsMouseClicked(1)
                 request_animation_frame(10)
             end
@@ -334,33 +173,15 @@ function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int 
 
             set_state(:first_boot_setup, false)
             set_state(:first_frame, false)
-            GLFW.SwapBuffers(window)
-            yield()
         end
     catch e
         @error "Error in main loop!" exception=(e, catch_backtrace())
     finally
-        println("Cleaning up...")
-
-        Mirage.cleanup_render_context()
-        Mirage.destroy!(canvas)
-        #Mirage.destroy!(mcts_canvas)
-
-        try
-            # Shutdown ImGui platform/renderer backends
-            CImGui.ImGui_ImplOpenGL3_Shutdown()
-            CImGui.ImGui_ImplGlfw_Shutdown()
-        catch e
-            @error "Error during ImGui backend shutdown" exception=(e, catch_backtrace())
-        end
-        CImGui.DestroyContext(imgui_ctx)
-        GLFW.DestroyWindow(window)
-        GLFW.Terminate()
-        println("Cleanup finished.")
+        current_app[] = nothing
     end
 end
 
-function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
+function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
     q_values = values(mcts_tree.q)
     min_q_value = minimum(q_values)
     max_q_value = maximum(q_values)
@@ -495,13 +316,29 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     end
 
     # Camera panning
-    canvas_pos = CImGui.GetItemRectMin()
-    canvas_size = CImGui.GetItemRectSize()
+    canvas_pos = canvas_viewport.pos
+    canvas_size = canvas_viewport.size
     set_state(:canvas_pos, canvas_pos)
     set_state(:canvas_size, canvas_size)
     mx, my = GLFW.GetCursorPos(window)
-    io = CImGui.GetIO()
-    is_hovering_canvas = mx >= canvas_pos.x && mx <= canvas_pos.x + canvas_size.x && my >= canvas_pos.y && my <= canvas_pos.y + canvas_size.y && !unsafe_load(io.WantCaptureMouse)
+    is_hovering_canvas = canvas_viewport.hovered
+
+    function screen_to_world(screen, pan, zoom, cpos, csize)
+        relative_mouse = [screen[1] - cpos.x - csize.x/2, screen[2] - cpos.y - csize.y/2]
+        return (relative_mouse .- pan) ./ zoom
+    end
+
+    wheel_delta = unsafe_load(CImGui.GetIO().MouseWheel)
+    if is_hovering_canvas && wheel_delta != 0
+        mouse_screen = [mx, my]
+        world_pos_before = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
+        camera.zoom *= (1.0 + wheel_delta * 0.1)
+        camera.zoom = clamp(camera.zoom, 0.1, 10.0)
+        world_pos_after = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
+        pan_delta = world_pos_before - world_pos_after
+        camera.pan .-= pan_delta .* camera.zoom
+        request_animation_frame(10)
+    end
 
     if is_hovering_canvas && CImGui.IsMouseDown(0) # Right mouse button for panning
         if !camera.panning
@@ -586,9 +423,8 @@ function main_view(canvas, window, mcts_tree, root_node, all_nodes, camera, delt
     request_animation_frame(1)
 
     # Rendering
-    Mirage.resize!(canvas, max(1, Int(trunc(canvas_size.x))), max(1, Int(trunc(canvas_size.y))))
-    Mirage.set_canvas(canvas)
     Mirage.save()
+    Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
     Mirage.fillcolor(Mirage.rgba(0, 0, 20, 255))
     Mirage.fillrect(0, 0, canvas.width, canvas.height)
     Mirage.restore()
@@ -913,18 +749,6 @@ N: $visits, Q: $v_val"
     end
 
     Mirage.restore()
-    Mirage.set_canvas()
-
-    # Draw canvas to ImGui window
-    draw_list = CImGui.GetWindowDrawList()
-    CImGui.AddImage(
-        draw_list,
-        CImGui.ImTextureRef(UInt64(canvas.texture[])),
-        CImGui.ImVec2(canvas_pos.x, canvas_pos.y),
-        CImGui.ImVec2(canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y),
-        CImGui.ImVec2(0, 1),
-        CImGui.ImVec2(1, 0)
-    )
 
     return node_id_counter
 end
@@ -1061,6 +885,6 @@ function (@main)(args::Vector{String})::Cint
     return 0
 end
 
-export mcts_viz, mcts_ascii_viz, example_mdp
+export mcts_viz, mcts_ascii_viz, example_mdp, MirageImGuiApps
 
 end # module MCTSViz
