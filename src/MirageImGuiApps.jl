@@ -302,12 +302,19 @@ function end_dockspace!(::MirageImGuiApp)
     return nothing
 end
 
-function begin_frame!(app::MirageImGuiApp; animate::Bool = false)
+function begin_frame!(
+    app::MirageImGuiApp;
+    animate::Bool = false,
+    idle_timeout::Union{Nothing, Real} = nothing,
+)
     if app.requested_frames > 0 || animate
         GLFW.PollEvents()
         app.requested_frames = max(app.requested_frames - 1, 0)
-    else
+    elseif idle_timeout === nothing
         GLFW.WaitEvents()
+    else
+        GLFW.PollEvents()
+        sleep(Float64(idle_timeout))
     end
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -342,6 +349,8 @@ function run!(
     frame!::Function,
     app::MirageImGuiApp;
     animate_when::Function = app -> false,
+    before_frame!::Function = app -> nothing,
+    idle_timeout::Union{Nothing, Real} = nothing,
     menu_bar::Bool = false,
     cleanup!::Function = app -> nothing,
 )
@@ -352,17 +361,18 @@ function run!(
             app.delta_time = min(1 / 30, current_frame_time - last_frame_time)
             last_frame_time = current_frame_time
 
+            Base.invokelatest(before_frame!, app)
             animate = animate_when(app)
-            begin_frame!(app; animate)
+            begin_frame!(app; animate, idle_timeout)
             if app.docking
                 begin_dockspace!(app; menu_bar)
                 try
-                    frame!(app)
+                    Base.invokelatest(frame!, app)
                 finally
                     end_dockspace!(app)
                 end
             else
-                frame!(app)
+                Base.invokelatest(frame!, app)
             end
             end_frame!(app)
         end

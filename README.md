@@ -46,3 +46,13 @@ MCTSViz.example_mdp()
 ```
 
 This will demonstrate how to use `mcts_viz` and allow you to explore the MCTS tree for the `GridWorldMDP` problem.
+
+## Live REPL Development
+
+`mcts_viz` runs with Revise-powered live reload enabled by default. While the GUI window is open, edits to named methods such as `mcts_viz_frame!`, `settings_window`, `main_view`, rendering helpers, and interaction logic are picked up automatically and redrawn on the next idle tick.
+
+```julia
+mcts_viz(my_mdp, mcts_policy; live_reload = true, live_reload_interval = 0.1)
+```
+
+Transient Revise errors are logged without closing the window, so you can fix the file and let the GUI recover. Code captured directly inside the already-running `mcts_viz` session, such as local variables initialized before `run!`, still requires restarting the visualizer because that state already exists in the running Julia process.

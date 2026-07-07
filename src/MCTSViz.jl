@@ -31,6 +31,15 @@ function initialize_application_state()
         :color_code_q_values => Ref(true),
         :color_code_n_values => Ref(false),
         :show_node_text => Ref(true),
+        :show_weighted_arrows => Ref(false),
+        :physics_repulsion_strength => Ref{Float32}(600.0f0),
+        :physics_attraction_strength => Ref{Float32}(0.9f0),
+        :center_root_requested => false,
+        :expand_all_requested => false,
+        :expand_best_path_requested => false,
+        :collapse_all_requested => false,
+        :selected_node => nothing,
+        :show_selected_node_parents => Ref(false),
     )
     return application_state
 end
@@ -53,6 +62,7 @@ function set_state(key::Symbol, value::Any)
 end
 
 const current_app = Ref{Union{Nothing, MirageImGuiApp}}(nothing)
+const live_reload_last_error = Ref{Union{Nothing, String}}(nothing)
 requested_animation_frames = 0
 function request_animation_frame(frames::Int64 = 1)
     global requested_animation_frames = frames
@@ -118,7 +128,74 @@ mutable struct Camera
     zoom::Float64
 end
 
-function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int = 3)
+mutable struct MCTSVizSession
+    app::MirageImGuiApp
+    mcts_tree::Any
+    root_node::TreeNode
+    node_id_counter::Int
+    all_nodes::Vector{TreeNode}
+    camera::Camera
+    expand_levels::Int
+end
+
+function live_reload_frame!(::MirageImGuiApp)
+    try
+        Revise.revise()
+        live_reload_last_error[] = nothing
+    catch e
+        msg = sprint(showerror, e)
+        if msg != live_reload_last_error[]
+            @warn "Revise failed; fix the error and the live GUI will retry." exception=(e, catch_backtrace())
+            live_reload_last_error[] = msg
+        end
+    end
+    return nothing
+end
+
+function mcts_viz_frame!(session::MCTSVizSession)
+    app = session.app
+    settings_window()
+    CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowPadding, (0.0f0, 0.0f0))
+    CImGui.Begin("Tree View")
+    CImGui.PopStyleVar()
+    try
+        draw_canvas!(app, :mcts_tree; label = "mcts_tree_canvas") do canvas, viewport
+            session.node_id_counter = main_view(
+                canvas,
+                app.window,
+                viewport,
+                session.mcts_tree,
+                session.root_node,
+                session.all_nodes,
+                session.camera,
+                app.delta_time,
+                session.node_id_counter,
+                session.expand_levels,
+            )
+        end
+    finally
+        CImGui.End()
+    end
+    if CImGui.IsMouseClicked(0) || CImGui.IsMouseClicked(1)
+        request_animation_frame(10)
+    end
+    if CImGui.IsMouseReleased(0) || CImGui.IsMouseReleased(1)
+        request_animation_frame(10)
+    end
+
+    set_state(:first_boot_setup, false)
+    set_state(:first_frame, false)
+    return nothing
+end
+
+function mcts_viz(
+    mdp,
+    mcts_policy;
+    keep_state::Bool = true,
+    expand_levels::Int = 3,
+    live_reload::Bool = true,
+    live_reload_interval::Real = 0.1,
+)
     mcts_tree = mcts_policy.tree
     app = MirageImGuiApp("MCTSViz"; width = 1200, height = 800)
     current_app[] = app
@@ -136,43 +213,17 @@ function mcts_viz(mdp, mcts_policy; keep_state::Bool = true, expand_levels::Int 
     set_state(:first_frame, true)
     
     root_node = TreeNode(text = string(mcts_tree.s_labels[1]), index = 1, id = 1)
-    node_id_counter = 1
     all_nodes = [root_node]
+    session = MCTSVizSession(app, mcts_tree, root_node, 1, all_nodes, camera, expand_levels)
     request_frame!(app, 10)
 
     try
-        run!(app) do app
-            settings_window()
-            CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowPadding, (0.0f0, 0.0f0))
-            CImGui.Begin("Tree View")
-            CImGui.PopStyleVar()
-            try
-                draw_canvas!(app, :mcts_tree; label = "mcts_tree_canvas") do canvas, viewport
-                    node_id_counter = main_view(
-                        canvas,
-                        app.window,
-                        viewport,
-                        mcts_tree,
-                        root_node,
-                        all_nodes,
-                        camera,
-                        app.delta_time,
-                        node_id_counter,
-                        expand_levels,
-                    )
-                end
-            finally
-                CImGui.End()
-            end
-            if CImGui.IsMouseClicked(0) || CImGui.IsMouseClicked(1)
-                request_animation_frame(10)
-            end
-            if CImGui.IsMouseReleased(0) || CImGui.IsMouseReleased(1)
-                request_animation_frame(10)
-            end
-
-            set_state(:first_boot_setup, false)
-            set_state(:first_frame, false)
+        run!(
+            app;
+            before_frame! = live_reload ? live_reload_frame! : (app -> nothing),
+            idle_timeout = live_reload ? live_reload_interval : nothing,
+        ) do app
+            Base.invokelatest(mcts_viz_frame!, session)
         end
     catch e
         @error "Error in main loop!" exception=(e, catch_backtrace())
@@ -183,15 +234,75 @@ end
 
 function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
     q_values = values(mcts_tree.q)
-    min_q_value = minimum(q_values)
-    max_q_value = maximum(q_values)
-    max_abs_q = isempty(q_values) ? 0.0 : maximum(abs.(q_values))
+    log_q_values = map(signed_log_scale, collect(q_values))
+    min_log_q_value = minimum(log_q_values)
+    max_log_q_value = maximum(log_q_values)
 
     n_values = values(mcts_tree.total_n)
     min_n_value = minimum(n_values)
     max_n_value = maximum(n_values)
+    action_n_values = values(mcts_tree.n)
+    min_arrow_n_value = minimum(vcat(collect(n_values), collect(action_n_values)))
+    max_arrow_n_value = maximum(vcat(collect(n_values), collect(action_n_values)))
 
     state_node_map = Dict{Int, TreeNode}(map(n -> n.index => n, filter(n -> n.is_state, all_nodes)))
+    n_palette = map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), reverse([
+        (  0/255, 174/255, 239/255),  # cyan
+        ( 68/255, 206/255,  27/255),  # green
+        (187/255, 219/255,  68/255),  # lime
+        (247/255, 227/255, 121/255),  # yellow
+        (242/255, 161/255,  52/255),  # orange
+        (255/255,  69/255,   0/255),  # red-orange
+    ]))
+    q_palette = n_palette
+
+    function normalize_range(value, min_value, max_value)
+        return max_value == min_value ? 0.5 : clamp((value - min_value) / (max_value - min_value), 0.0, 1.0)
+    end
+
+    function rgba_from_palette(intensity, palette; alpha=255)
+        color = interpolate_palette(intensity, palette)
+        return (color[1], color[2], color[3], alpha)
+    end
+
+    function node_label(node::TreeNode)
+        if node.is_state
+            return string(mcts_tree.s_labels[node.index])
+        else
+            return string(mcts_tree.a_labels[node.index])
+        end
+    end
+
+    function node_visits(node::TreeNode)
+        if node.is_state
+            return mcts_tree.total_n[node.index]
+        else
+            return mcts_tree.n[node.index]
+        end
+    end
+
+    function node_value_text(node::TreeNode)
+        return node.is_state ? "" : string(mcts_tree.q[node.index])
+    end
+
+    function edge_visits(parent::TreeNode, child::TreeNode)
+        return child.is_state ? mcts_tree.total_n[child.index] : mcts_tree.n[child.index]
+    end
+
+    function n_color(node::TreeNode; alpha=255)
+        intensity = normalize_range(node_visits(node), min_arrow_n_value, max_arrow_n_value)
+        return rgba_from_palette(intensity, n_palette; alpha)
+    end
+
+    max_edge_visits = maximum([max(0, edge_visits(parent, child)) for parent in all_nodes for child in parent.children]; init = 0)
+
+    function edge_width(parent::TreeNode, child::TreeNode)
+        if !get_state(:show_weighted_arrows)[] || max_edge_visits <= 0
+            return 1.5
+        end
+        intensity = log1p(max(0, edge_visits(parent, child))) / log1p(max_edge_visits)
+        return 0.75 + 4.25 * intensity
+    end
 
     # Helper functions
     function get_actions_from_state_index(state_index::Int64)
@@ -252,67 +363,144 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         end
     end
 
+    next_position(node, i, i_max) = [cos(i / i_max) * 40.0, sin(i / i_max) * 40.0] + (
+        node.position[1] == 0.0 && node.position[2] == 0.0
+        ? [0.0, 0.0]
+        : node.position + normalize(node.position) * 20
+    )
+
+    function expand_one_level!(node)
+        if !isempty(node.children)
+            return false
+        end
+
+        if node.is_state
+            actions = get_actions_from_state_index(node.index)
+            for (a_idx, action) in enumerate(actions)
+                node_id_counter += 1
+                new_node = TreeNode(
+                    text = string(mcts_tree.a_labels[action]),
+                    is_state = false,
+                    index = action,
+                    parents = [node],
+                    position = next_position(node, a_idx, length(actions)),
+                    id = node_id_counter
+                )
+                push!(node.children, new_node)
+                push!(all_nodes, new_node)
+            end
+        else
+            @assert !isempty(node.parents) "Action node should have at least one parent"
+            states = find_next_states(node.parents[1].index, node.index)
+            for state in states
+                if haskey(state_node_map, state)
+                    new_node = state_node_map[state]
+                    if !(node in new_node.parents)
+                        push!(new_node.parents, node)
+                    end
+                else
+                    node_id_counter += 1
+                    new_node = TreeNode(
+                        text = string(mcts_tree.s_labels[state]),
+                        index = state,
+                        parents = [node],
+                        position = next_position(node, 0, 1),
+                        id = node_id_counter
+                    )
+                    state_node_map[state] = new_node
+                    push!(all_nodes, new_node)
+                end
+                if !(new_node in node.children)
+                    push!(node.children, new_node)
+                end
+            end
+        end
+        return true
+    end
+
     function expand_node(node, levels)
         if levels <= 0
             return
         end
 
-        next_position(i, i_max) = [cos(i / i_max) * 40.0, sin(i / i_max) * 40.0] + (
-            node.position[1] == 0.0 && node.position[2] == 0.0
-            ? [0.0, 0.0]
-            : node.position + normalize(node.position) * 20
-        )
-
-        if isempty(node.children)
-            if node.is_state
-                actions = get_actions_from_state_index(node.index)
-                for (a_idx, action) in enumerate(actions)
-                    node_id_counter += 1
-                    new_node = TreeNode(
-                        text = string(mcts_tree.a_labels[action]),
-                        is_state = false,
-                        index = action,
-                        parents = [node],
-                        position = next_position(a_idx, length(actions)),
-                        id = node_id_counter
-                    )
-                    push!(node.children, new_node)
-                    push!(all_nodes, new_node)
-                    expand_node(new_node, levels - 1)
-                end
-            else # is action node
-                @assert !isempty(node.parents) "Action node should have at least one parent"
-                states = find_next_states(node.parents[1].index, node.index)
-                for state in states
-                    if haskey(state_node_map, state)
-                        new_node = state_node_map[state]
-                        if !(node in new_node.parents)
-                            push!(new_node.parents, node)
-                        end
-                    else
-                        node_id_counter += 1
-                        new_node = TreeNode(
-                            text = string(mcts_tree.s_labels[state]),
-                            index = state,
-                            parents = [node],
-                            position = next_position(0, 1),
-                            id = node_id_counter
-                        )
-                        state_node_map[state] = new_node
-                        push!(all_nodes, new_node)
-                    end
-
-                    if !(new_node in node.children)
-                        push!(node.children, new_node)
-                    end
-                    expand_node(new_node, levels - 1)
-                end
-            end
+        expand_one_level!(node)
+        for child in node.children
+            expand_node(child, levels - 1)
         end
+    end
+
+    function expand_all!(node, visited=Set{Int}())
+        if node.id in visited
+            return
+        end
+        push!(visited, node.id)
+        expand_one_level!(node)
+        for child in copy(node.children)
+            expand_all!(child, visited)
+        end
+    end
+
+    function best_child(node)
+        expand_one_level!(node)
+        if isempty(node.children)
+            return nothing
+        end
+        if node.is_state
+            return node.children[argmax([mcts_tree.q[child.index] for child in node.children])]
+        else
+            return node.children[argmax([mcts_tree.total_n[child.index] for child in node.children])]
+        end
+    end
+
+    function expand_best_path!(node, visited=Set{Int}())
+        if node.id in visited
+            return
+        end
+        push!(visited, node.id)
+        child = best_child(node)
+        if child !== nothing
+            expand_best_path!(child, visited)
+        end
+    end
+
+    function collapse_all!()
+        for node in all_nodes
+            if node !== root_node
+                empty!(node.parents)
+            end
+            empty!(node.children)
+        end
+        empty!(all_nodes)
+        push!(all_nodes, root_node)
+        empty!(state_node_map)
+        state_node_map[root_node.index] = root_node
+        root_node.position .= [0.0, 0.0]
+        root_node.velocity .= [0.0, 0.0]
+        root_node.force .= [0.0, 0.0]
+        set_state(:selected_node, nothing)
+        set_state(:show_selected_node_parents, false)
     end
 
     if get_state(:first_frame)
         expand_node(root_node, expand_levels)
+    end
+
+    if get_state(:collapse_all_requested)
+        collapse_all!()
+        set_state(:collapse_all_requested, false)
+        request_animation_frame(30)
+    end
+
+    if get_state(:expand_all_requested)
+        expand_all!(root_node)
+        set_state(:expand_all_requested, false)
+        request_animation_frame(30)
+    end
+
+    if get_state(:expand_best_path_requested)
+        expand_best_path!(root_node)
+        set_state(:expand_best_path_requested, false)
+        request_animation_frame(30)
     end
 
     # Camera panning
@@ -326,6 +514,12 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
     function screen_to_world(screen, pan, zoom, cpos, csize)
         relative_mouse = [screen[1] - cpos.x - csize.x/2, screen[2] - cpos.y - csize.y/2]
         return (relative_mouse .- pan) ./ zoom
+    end
+
+    if get_state(:center_root_requested)
+        camera.pan .= -root_node.position .* camera.zoom
+        set_state(:center_root_requested, false)
+        request_animation_frame(10)
     end
 
     wheel_delta = unsafe_load(CImGui.GetIO().MouseWheel)
@@ -353,8 +547,8 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
 
     # Physics simulation
     function update_physics(nodes, delta_time)
-        repulsion_strength = 600.0
-        attraction_strength = 0.9
+        repulsion_strength = Float64(get_state(:physics_repulsion_strength)[])
+        attraction_strength = Float64(get_state(:physics_attraction_strength)[])
         damping = 0.85
 
         for node in nodes
@@ -434,14 +628,27 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
     Mirage.scale(camera.zoom, camera.zoom)
 
     # Draw connections
-    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius)
+    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius, stroke_width, start_color, end_color)
+        if p1 == p2
+            return
+        end
         direction = normalize(p2 - p1)
         p2_adjusted = p2 - direction * node_radius
         
         # Draw the main line
-        Mirage.moveto(p1...)
-        Mirage.lineto(p2_adjusted...)
-        Mirage.stroke()
+        Mirage.strokewidth(stroke_width)
+        segment_count = 12
+        for i in 1:segment_count
+            t1 = (i - 1) / segment_count
+            t2 = i / segment_count
+            c = interpolate_rgba(t1, start_color, end_color)
+            segment_start = p1 .* (1 - t1) .+ p2_adjusted .* t1
+            segment_end = p1 .* (1 - t2) .+ p2_adjusted .* t2
+            Mirage.strokecolor(c)
+            Mirage.moveto(segment_start...)
+            Mirage.lineto(segment_end...)
+            Mirage.stroke()
+        end
 
         # Calculate arrowhead points
         p3 = p2_adjusted - arrowhead_length * direction
@@ -460,6 +667,7 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         ]
 
         # Draw arrowhead
+        Mirage.strokecolor(end_color)
         Mirage.moveto(p2_adjusted...)
         Mirage.lineto(arrow_p1...)
         Mirage.stroke()
@@ -475,9 +683,9 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         end
         push!(visited, node)
         for child in node.children
-            Mirage.strokecolor(Mirage.rgba(255, 255, 255, 50))
-            Mirage.strokewidth(1.5)
-            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0)
+            start_color = get_state(:color_code_n_values)[] ? n_color(node; alpha=90) : Mirage.rgba(255, 255, 255, 50)
+            end_color = get_state(:color_code_n_values)[] ? n_color(child; alpha=90) : Mirage.rgba(255, 255, 255, 50)
+            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0, edge_width(node, child), start_color, end_color)
             draw_connections(child, visited)
         end
     end
@@ -533,102 +741,26 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         if node.is_state
             if get_state(:color_code_n_values)[]
                 n_val = mcts_tree.total_n[node.index]
-                intensity = 0.0
-                if max_n_value > 0
-                    intensity = (n_val - min_n_value) / (max_n_value - min_n_value)
-                end
-
-                rainbow = reverse([
-                    #(  0/255,  92/255, 230/255),  # blue
-                    (  0/255, 174/255, 239/255),  # cyan
-                    #(  0/255, 191/255, 165/255),  # teal green
-                    ( 68/255, 206/255,  27/255),  # green
-                    (187/255, 219/255,  68/255),  # lime
-                    (247/255, 227/255, 121/255),  # yellow
-                    (242/255, 161/255,  52/255),  # orange
-                    (255/255,  69/255,   0/255),  # red-orange
-                ])
-                color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
-                Mirage.fillcolor((color[1], color[2], color[3], 255))
+                intensity = normalize_range(n_val, min_n_value, max_n_value)
+                Mirage.fillcolor(rgba_from_palette(intensity, n_palette))
             else
                 Mirage.fillcolor(Mirage.rgba(0, 0, 200, 255))
             end
         else
             if get_state(:color_code_q_values)[]
                 q_val = mcts_tree.q[node.index]
-                intensity = 0.0
-                if max_q_value > 0
-                    intensity = (q_val - min_q_value) / (max_q_value - min_q_value)
-                end
+                intensity = normalize_range(signed_log_scale(q_val), min_log_q_value, max_log_q_value)
                 #@info (;max_q_value, min_q_value, q_val, intensity)
 
-                color = Mirage.rgba(100, 100, 0, 255)
-                rainbow = reverse([
-                    #(  0/255,  92/255, 230/255),  # blue
-                    (  0/255, 174/255, 239/255),  # cyan
-                    #(  0/255, 191/255, 165/255),  # teal green
-                    ( 68/255, 206/255,  27/255),  # green
-                    (187/255, 219/255,  68/255),  # lime
-                    (247/255, 227/255, 121/255),  # yellow
-                    (242/255, 161/255,  52/255),  # orange
-                    (255/255,  69/255,   0/255),  # red-orange
-                ])
-                color = interpolate_palette(intensity, map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), rainbow))
-                Mirage.fillcolor((color[1], color[2], color[3], 255))
+                Mirage.fillcolor(rgba_from_palette(intensity, q_palette))
             else
                 Mirage.fillcolor(Mirage.rgba(150, 150, 0, 255))
             end
         end
 
-        next_position(i, i_max) = [cos(i / i_max) * 40.0, sin(i / i_max) * 40.0] + (
-            node.position[1] == 0.0 && node.position[2] == 0.0
-            ? [0.0, 0.0]
-            : node.position + normalize(node.position) * 20
-        )
-
         if is_hovered && CImGui.IsMouseClicked(0) #&& !camera.panning
             if isempty(node.children)
-                if node.is_state
-                    actions = get_actions_from_state_index(node.index)
-                    for (a_idx, action) in enumerate(actions)
-                        node_id_counter += 1
-                        new_node = TreeNode(
-                            text = string(mcts_tree.a_labels[action]),
-                            is_state = false,
-                            index = action,
-                            parents = [node],
-                            position = next_position(a_idx, length(actions)),
-                            id = node_id_counter
-                        )
-                        push!(node.children, new_node)
-                        push!(all_nodes, new_node)
-                    end
-                else # is action node
-                    @assert !isempty(node.parents) "Action node should have at least one parent"
-                    states = find_next_states(node.parents[1].index, node.index)
-                    for state in states
-                        if haskey(state_node_map, state)
-                            new_node = state_node_map[state]
-                            if !(node in new_node.parents)
-                                push!(new_node.parents, node)
-                            end
-                        else
-                            node_id_counter += 1
-                            new_node = TreeNode(
-                                text = string(mcts_tree.s_labels[state]),
-                                index = state,
-                                parents = [node],
-                                position = next_position(0, 1),
-                                id = node_id_counter
-                            )
-                            state_node_map[state] = new_node
-                            push!(all_nodes, new_node)
-                        end
-                        if !(new_node in node.children)
-                            push!(node.children, new_node)
-                        end
-                    end
-                end
+                expand_one_level!(node)
             else
                 # Sever connections from the clicked node to its children
                 children_to_process = copy(node.children)
@@ -643,6 +775,13 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
             end
             request_animation_frame(10)
         end
+
+        if is_hovered && CImGui.IsMouseClicked(1)
+            set_state(:selected_node, node)
+            set_state(:show_selected_node_parents, false)
+            CImGui.OpenPopup("Node Details")
+            request_animation_frame(10)
+        end
         
         Mirage.translate(node.position...)
 
@@ -650,6 +789,19 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
             # Draw circle for state nodes
             Mirage.circle(24)
             Mirage.fill()
+            if node === root_node
+                Mirage.save()
+                Mirage.scale(1 / camera.zoom)
+                Mirage.translate(-6, 8)
+                Mirage.save()
+                Mirage.translate(1, 1)
+                Mirage.fillcolor(Mirage.rgba(0, 0, 0, 255))
+                Mirage.text("R")
+                Mirage.restore()
+                Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
+                Mirage.text("R")
+                Mirage.restore()
+            end
             if is_hovered
                 Mirage.save()
                 Mirage.strokecolor(Mirage.rgba(255, 255, 255, 255))
@@ -750,15 +902,76 @@ N: $visits, Q: $v_val"
 
     Mirage.restore()
 
+    selected_node = get_state(:selected_node)
+    if selected_node !== nothing && CImGui.BeginPopup("Node Details")
+        try
+            CImGui.TextUnformatted(selected_node.is_state ? "State node" : "Action node")
+            CImGui.Separator()
+            CImGui.TextUnformatted("Label: $(node_label(selected_node))")
+            CImGui.TextUnformatted("Index: $(selected_node.index)")
+            CImGui.TextUnformatted("Node id: $(selected_node.id)")
+            CImGui.TextUnformatted("Visits N: $(node_visits(selected_node))")
+            if !selected_node.is_state
+                CImGui.TextUnformatted("Q: $(node_value_text(selected_node))")
+            end
+            CImGui.TextUnformatted("Position: ($(round(selected_node.position[1], digits=2)), $(round(selected_node.position[2], digits=2)))")
+            CImGui.TextUnformatted("Parents: $(length(selected_node.parents))")
+            CImGui.TextUnformatted("Children: $(length(selected_node.children))")
+            CImGui.Separator()
+            if CImGui.Button(get_state(:show_selected_node_parents)[] ? "Hide Parents" : "Show All Parents")
+                set_state(:show_selected_node_parents, !get_state(:show_selected_node_parents)[])
+                request_animation_frame(10)
+            end
+            if get_state(:show_selected_node_parents)[]
+                if isempty(selected_node.parents)
+                    CImGui.TextUnformatted("No parents")
+                else
+                    for (i, parent) in enumerate(selected_node.parents)
+                        CImGui.TextUnformatted("$(i). $(parent.is_state ? "State" : "Action") #$(parent.id): $(node_label(parent))")
+                    end
+                end
+            end
+        finally
+            CImGui.EndPopup()
+        end
+    end
+
     return node_id_counter
 end
 
 function settings_window()
     CImGui.Begin("Settings")
+    if CImGui.Button("Center Root")
+        set_state(:center_root_requested, true)
+        request_animation_frame(10)
+    end
+    if CImGui.Button("Expand All")
+        set_state(:expand_all_requested, true)
+        request_animation_frame(30)
+    end
+    if CImGui.Button("Expand Best Path")
+        set_state(:expand_best_path_requested, true)
+        request_animation_frame(30)
+    end
+    if CImGui.Button("Collapse All")
+        set_state(:collapse_all_requested, true)
+        request_animation_frame(30)
+    end
     CImGui.Checkbox("Color code Q-values", get_state(:color_code_q_values))
     CImGui.Checkbox("Color code N-values", get_state(:color_code_n_values))
     CImGui.Checkbox("Show node text", get_state(:show_node_text))
+    CImGui.Checkbox("Weight arrows by N", get_state(:show_weighted_arrows))
+    if CImGui.SliderFloat("Repulsion", get_state(:physics_repulsion_strength), 0.0f0, 3000.0f0)
+        request_animation_frame(30)
+    end
+    if CImGui.SliderFloat("Attraction", get_state(:physics_attraction_strength), 0.0f0, 5.0f0)
+        request_animation_frame(30)
+    end
     CImGui.End()
+end
+
+function signed_log_scale(value::Real)
+    return sign(value) * log1p(abs(value))
 end
 
 function interpolate_rgb(t::Float64, c1::Tuple, c2::Tuple)::Tuple
@@ -766,6 +979,15 @@ function interpolate_rgb(t::Float64, c1::Tuple, c2::Tuple)::Tuple
     g = (1 - t) * c1[2] + t * c2[2]
     b = (1 - t) * c1[3] + t * c2[3]
     return (r, g, b)
+end
+
+function interpolate_rgba(t::Real, c1::Tuple, c2::Tuple)::Tuple
+    t_clamped = clamp(Float64(t), 0.0, 1.0)
+    r = (1 - t_clamped) * c1[1] + t_clamped * c2[1]
+    g = (1 - t_clamped) * c1[2] + t_clamped * c2[2]
+    b = (1 - t_clamped) * c1[3] + t_clamped * c2[3]
+    a = (1 - t_clamped) * c1[4] + t_clamped * c2[4]
+    return (r, g, b, a)
 end
 
 function interpolate_palette(t::Float64, colors)::Tuple
