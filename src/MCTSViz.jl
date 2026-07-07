@@ -63,6 +63,8 @@ end
 
 const current_app = Ref{Union{Nothing, MirageImGuiApp}}(nothing)
 const live_reload_last_error = Ref{Union{Nothing, String}}(nothing)
+const live_reload_last_check_time = Ref(0.0)
+const live_reload_interval_seconds = Ref(0.1)
 requested_animation_frames = 0
 function request_animation_frame(frames::Int64 = 1)
     global requested_animation_frames = frames
@@ -128,6 +130,15 @@ mutable struct Camera
     zoom::Float64
 end
 
+const VISUALIZATION_PALETTE = map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), reverse([
+    (  0/255, 174/255, 239/255),  # cyan
+    ( 68/255, 206/255,  27/255),  # green
+    (187/255, 219/255,  68/255),  # lime
+    (247/255, 227/255, 121/255),  # yellow
+    (242/255, 161/255,  52/255),  # orange
+    (255/255,  69/255,   0/255),  # red-orange
+]))
+
 mutable struct MCTSVizSession
     app::MirageImGuiApp
     mcts_tree::Any
@@ -139,6 +150,12 @@ mutable struct MCTSVizSession
 end
 
 function live_reload_frame!(::MirageImGuiApp)
+    now = time()
+    if now - live_reload_last_check_time[] < live_reload_interval_seconds[]
+        return nothing
+    end
+    live_reload_last_check_time[] = now
+
     try
         Revise.revise()
         live_reload_last_error[] = nothing
@@ -215,6 +232,7 @@ function mcts_viz(
     root_node = TreeNode(text = string(mcts_tree.s_labels[1]), index = 1, id = 1)
     all_nodes = [root_node]
     session = MCTSVizSession(app, mcts_tree, root_node, 1, all_nodes, camera, expand_levels)
+    live_reload_interval_seconds[] = Float64(live_reload_interval)
     request_frame!(app, 10)
 
     try
@@ -233,28 +251,52 @@ function mcts_viz(
 end
 
 function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
-    q_values = values(mcts_tree.q)
-    log_q_values = map(signed_log_scale, collect(q_values))
-    min_log_q_value = minimum(log_q_values)
-    max_log_q_value = maximum(log_q_values)
-
-    n_values = values(mcts_tree.total_n)
-    min_n_value = minimum(n_values)
-    max_n_value = maximum(n_values)
-    action_n_values = values(mcts_tree.n)
-    min_arrow_n_value = minimum(vcat(collect(n_values), collect(action_n_values)))
-    max_arrow_n_value = maximum(vcat(collect(n_values), collect(action_n_values)))
-
     state_node_map = Dict{Int, TreeNode}(map(n -> n.index => n, filter(n -> n.is_state, all_nodes)))
-    n_palette = map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), reverse([
-        (  0/255, 174/255, 239/255),  # cyan
-        ( 68/255, 206/255,  27/255),  # green
-        (187/255, 219/255,  68/255),  # lime
-        (247/255, 227/255, 121/255),  # yellow
-        (242/255, 161/255,  52/255),  # orange
-        (255/255,  69/255,   0/255),  # red-orange
-    ]))
+    n_palette = VISUALIZATION_PALETTE
     q_palette = n_palette
+
+    min_log_q_value = Inf
+    max_log_q_value = -Inf
+    min_n_value = Inf
+    max_n_value = -Inf
+    min_arrow_n_value = Inf
+    max_arrow_n_value = -Inf
+    max_edge_visits = 0
+
+    for node in all_nodes
+        if node.is_state
+            n_val = mcts_tree.total_n[node.index]
+            min_n_value = min(min_n_value, n_val)
+            max_n_value = max(max_n_value, n_val)
+            min_arrow_n_value = min(min_arrow_n_value, n_val)
+            max_arrow_n_value = max(max_arrow_n_value, n_val)
+        else
+            q_val = signed_log_scale(mcts_tree.q[node.index])
+            n_val = mcts_tree.n[node.index]
+            min_log_q_value = min(min_log_q_value, q_val)
+            max_log_q_value = max(max_log_q_value, q_val)
+            min_arrow_n_value = min(min_arrow_n_value, n_val)
+            max_arrow_n_value = max(max_arrow_n_value, n_val)
+        end
+
+        for child in node.children
+            child_visits = child.is_state ? mcts_tree.total_n[child.index] : mcts_tree.n[child.index]
+            max_edge_visits = max(max_edge_visits, child_visits)
+        end
+    end
+
+    if min_log_q_value == Inf
+        min_log_q_value = 0.0
+        max_log_q_value = 0.0
+    end
+    if min_n_value == Inf
+        min_n_value = 0.0
+        max_n_value = 0.0
+    end
+    if min_arrow_n_value == Inf
+        min_arrow_n_value = 0.0
+        max_arrow_n_value = 0.0
+    end
 
     function normalize_range(value, min_value, max_value)
         return max_value == min_value ? 0.5 : clamp((value - min_value) / (max_value - min_value), 0.0, 1.0)
@@ -293,8 +335,6 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         intensity = normalize_range(node_visits(node), min_arrow_n_value, max_arrow_n_value)
         return rgba_from_palette(intensity, n_palette; alpha)
     end
-
-    max_edge_visits = maximum([max(0, edge_visits(parent, child)) for parent in all_nodes for child in parent.children]; init = 0)
 
     function edge_width(parent::TreeNode, child::TreeNode)
         if !get_state(:show_weighted_arrows)[] || max_edge_visits <= 0
@@ -549,35 +589,49 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
     function update_physics(nodes, delta_time)
         repulsion_strength = Float64(get_state(:physics_repulsion_strength)[])
         attraction_strength = Float64(get_state(:physics_attraction_strength)[])
+        desired_distance = Float64(get_state(:desired_distance)[])
+        desired_distance_sq = desired_distance * desired_distance
         damping = 0.85
 
         for node in nodes
-            node.force = [0.0, 0.0]
+            node.force[1] = 0.0
+            node.force[2] = 0.0
         end
 
         # Build spatial hash grid
-        grid_cell_size = get_state(:desired_distance)[] * 6.0
+        grid_cell_size = desired_distance * 6.0
         grid = SpatialHashGrid(grid_cell_size)
         for node in nodes
             insert!(grid, node)
         end
 
         # Repulsion
+        empty_neighbors = TreeNode[]
         for node_a in nodes
-            for node_b in get_neighbors(grid, node_a)
-                if node_a.id < node_b.id
-                    delta_pos = node_a.position - node_b.position
-                    distance_sq = sum(delta_pos.^2)
-                    if distance_sq > 1.0 # Avoid extreme forces at very close distances
-                        force_magnitude = repulsion_strength * (get_state(:desired_distance)[]^2) / distance_sq
-                        force_vec = force_magnitude * normalize(delta_pos)
-                        node_a.force += force_vec
-                        node_b.force -= force_vec
-                    else
-                        # Apply a small fixed force to push nodes apart if they are on top of each other
-                        force_vec = [1.0, 0.0]
-                        node_a.force += force_vec
-                        node_b.force -= force_vec
+            center_coords = get_cell_coords(grid, node_a.position)
+            for i in -1:1
+                for j in -1:1
+                    neighbor_coords = (center_coords[1] + i, center_coords[2] + j)
+                    for node_b in get(grid.cells, neighbor_coords, empty_neighbors)
+                        if node_a.id < node_b.id
+                            dx = node_a.position[1] - node_b.position[1]
+                            dy = node_a.position[2] - node_b.position[2]
+                            distance_sq = dx * dx + dy * dy
+                            if distance_sq > 1.0 # Avoid extreme forces at very close distances
+                                distance = sqrt(distance_sq)
+                                force_magnitude = repulsion_strength * desired_distance_sq / distance_sq
+                                fx = force_magnitude * dx / distance
+                                fy = force_magnitude * dy / distance
+                            else
+                                # Apply a small fixed force to push nodes apart if they are on top of each other
+                                fx = 1.0
+                                fy = 0.0
+                            end
+                            node_a.force[1] += fx
+                            node_a.force[2] += fy
+                            node_b.force[1] -= fx
+                            node_b.force[2] -= fy
+                        end
                     end
                 end
             end
@@ -587,34 +641,46 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         for node in nodes
             if !isempty(node.parents)
                 for parent in node.parents
-                    delta_pos = parent.position - node.position
-                    force = attraction_strength * delta_pos
-                    node.force += force
-                    parent.force -= force
+                    fx = attraction_strength * (parent.position[1] - node.position[1])
+                    fy = attraction_strength * (parent.position[2] - node.position[2])
+                    node.force[1] += fx
+                    node.force[2] += fy
+                    parent.force[1] -= fx
+                    parent.force[2] -= fy
                 end
             end
         end
 
         # Update positions
+        max_speed_sq = 0.0
         for node in nodes
             if node.id == 1 # Fix root node
-                node.position = [0.0, 0.0]
-                node.velocity = [0.0, 0.0]
-                node.force = [0.0, 0.0]
+                node.position[1] = 0.0
+                node.position[2] = 0.0
+                node.velocity[1] = 0.0
+                node.velocity[2] = 0.0
+                node.force[1] = 0.0
+                node.force[2] = 0.0
                 continue
             end
 
-            node.velocity += node.force * delta_time
-            node.velocity *= damping
+            node.velocity[1] = (node.velocity[1] + node.force[1] * delta_time) * damping
+            node.velocity[2] = (node.velocity[2] + node.force[2] * delta_time) * damping
             #node.velocity[2] = 0
-            node.position += node.velocity * delta_time
+            node.position[1] += node.velocity[1] * delta_time
+            node.position[2] += node.velocity[2] * delta_time
+            max_speed_sq = max(max_speed_sq, node.velocity[1] * node.velocity[1] + node.velocity[2] * node.velocity[2])
         end
+        return max_speed_sq
     end
 
+    max_speed_sq = 0.0
     for i in 1:6
-        update_physics(all_nodes, 3 / 60)
+        max_speed_sq = max(max_speed_sq, update_physics(all_nodes, 3 / 60))
     end
-    request_animation_frame(1)
+    if max_speed_sq > 0.01
+        request_animation_frame(1)
+    end
 
     # Rendering
     Mirage.save()
@@ -628,52 +694,70 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
     Mirage.scale(camera.zoom, camera.zoom)
 
     # Draw connections
-    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius, stroke_width, start_color, end_color)
+    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius, stroke_width, start_color, end_color, gradient)
         if p1 == p2
             return
         end
-        direction = normalize(p2 - p1)
-        p2_adjusted = p2 - direction * node_radius
+        dx = p2[1] - p1[1]
+        dy = p2[2] - p1[2]
+        distance = hypot(dx, dy)
+        if distance <= 0.0
+            return
+        end
+        dir_x = dx / distance
+        dir_y = dy / distance
+        p2_adjusted_x = p2[1] - dir_x * node_radius
+        p2_adjusted_y = p2[2] - dir_y * node_radius
         
         # Draw the main line
         Mirage.strokewidth(stroke_width)
-        segment_count = 12
-        for i in 1:segment_count
-            t1 = (i - 1) / segment_count
-            t2 = i / segment_count
-            c = interpolate_rgba(t1, start_color, end_color)
-            segment_start = p1 .* (1 - t1) .+ p2_adjusted .* t1
-            segment_end = p1 .* (1 - t2) .+ p2_adjusted .* t2
-            Mirage.strokecolor(c)
-            Mirage.moveto(segment_start...)
-            Mirage.lineto(segment_end...)
+        if gradient
+            segment_count = 12
+            for i in 1:segment_count
+                t1 = (i - 1) / segment_count
+                t2 = i / segment_count
+                c = interpolate_rgba(t1, start_color, end_color)
+                segment_start_x = p1[1] * (1 - t1) + p2_adjusted_x * t1
+                segment_start_y = p1[2] * (1 - t1) + p2_adjusted_y * t1
+                segment_end_x = p1[1] * (1 - t2) + p2_adjusted_x * t2
+                segment_end_y = p1[2] * (1 - t2) + p2_adjusted_y * t2
+                Mirage.strokecolor(c)
+                Mirage.moveto(segment_start_x, segment_start_y)
+                Mirage.lineto(segment_end_x, segment_end_y)
+                Mirage.stroke()
+            end
+        else
+            Mirage.strokecolor(start_color)
+            Mirage.moveto(p1[1], p1[2])
+            Mirage.lineto(p2_adjusted_x, p2_adjusted_y)
             Mirage.stroke()
         end
 
         # Calculate arrowhead points
-        p3 = p2_adjusted - arrowhead_length * direction
+        p3_x = p2_adjusted_x - arrowhead_length * dir_x
+        p3_y = p2_adjusted_y - arrowhead_length * dir_y
         
         # Rotate direction vector for arrowhead lines
         # Rotate by +arrowhead_angle
-        arrow_p1 = [
-            cos(arrowhead_angle) * (p3[1] - p2_adjusted[1]) - sin(arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[1],
-            sin(arrowhead_angle) * (p3[1] - p2_adjusted[1]) + cos(arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[2]
-        ]
+        cos_angle = cos(arrowhead_angle)
+        sin_angle = sin(arrowhead_angle)
+        arrow_dx = p3_x - p2_adjusted_x
+        arrow_dy = p3_y - p2_adjusted_y
+        arrow_p1_x = cos_angle * arrow_dx - sin_angle * arrow_dy + p2_adjusted_x
+        arrow_p1_y = sin_angle * arrow_dx + cos_angle * arrow_dy + p2_adjusted_y
         
         # Rotate by -arrowhead_angle
-        arrow_p2 = [
-            cos(-arrowhead_angle) * (p3[1] - p2_adjusted[1]) - sin(-arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[1],
-            sin(-arrowhead_angle) * (p3[1] - p2_adjusted[1]) + cos(-arrowhead_angle) * (p3[2] - p2_adjusted[2]) + p2_adjusted[2]
-        ]
+        arrow_p2_x = cos_angle * arrow_dx + sin_angle * arrow_dy + p2_adjusted_x
+        arrow_p2_y = -sin_angle * arrow_dx + cos_angle * arrow_dy + p2_adjusted_y
 
         # Draw arrowhead
         Mirage.strokecolor(end_color)
-        Mirage.moveto(p2_adjusted...)
-        Mirage.lineto(arrow_p1...)
+        Mirage.moveto(p2_adjusted_x, p2_adjusted_y)
+        Mirage.lineto(arrow_p1_x, arrow_p1_y)
         Mirage.stroke()
         
-        Mirage.moveto(p2_adjusted...)
-        Mirage.lineto(arrow_p2...)
+        Mirage.moveto(p2_adjusted_x, p2_adjusted_y)
+        Mirage.lineto(arrow_p2_x, arrow_p2_y)
         Mirage.stroke()
     end
 
@@ -682,10 +766,11 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
             return
         end
         push!(visited, node)
+        color_by_n = get_state(:color_code_n_values)[]
         for child in node.children
-            start_color = get_state(:color_code_n_values)[] ? n_color(node; alpha=90) : Mirage.rgba(255, 255, 255, 50)
-            end_color = get_state(:color_code_n_values)[] ? n_color(child; alpha=90) : Mirage.rgba(255, 255, 255, 50)
-            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0, edge_width(node, child), start_color, end_color)
+            start_color = color_by_n ? n_color(node; alpha=90) : Mirage.rgba(255, 255, 255, 50)
+            end_color = color_by_n ? n_color(child; alpha=90) : Mirage.rgba(255, 255, 255, 50)
+            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0, edge_width(node, child), start_color, end_color, color_by_n)
             draw_connections(child, visited)
         end
     end
