@@ -4,6 +4,10 @@ A visualization tool for Monte Carlo Tree Search (MCTS) solver trees from [MCTS.
 
 This tool provides an interactive GUI to explore the MCTS tree, inspect node properties (like Q-values and visit counts), and understand the solver's decision-making process.
 
+The desktop application is built directly with Mirage's integrated GUI API:
+`MirageApp`, `dock_layout!`, `draw_canvas!`, event-driven `request_frame!`, and
+`run_live!`. MCTSViz no longer maintains a separate GLFW, OpenGL, or ImGui host.
+
 ![MCTSViz Image](https://github.com/user-attachments/assets/bd717470-62fc-4e6c-98a4-db80b66272f5)
 
 ## Usage

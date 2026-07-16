@@ -1,16 +1,12 @@
 module MCTSViz
 
-using Revise
-using GLFW
 using CImGui
 using LinearAlgebra: normalize
-import Mirage
+using Revise
+using Mirage
 using POMDPs
 using MCTS
 using POMDPTools
-
-include("MirageImGuiApps.jl")
-using .MirageImGuiApps
 
 global application_state::Dict{Symbol, Any} = Dict()
 function initialize_application_state()
@@ -19,6 +15,7 @@ function initialize_application_state()
         :unfolded_states => Dict(),
         :unfolded_actions => Dict(),
         :first_boot_setup => !isfile("imgui.ini"),
+        :layout_setup_done => false,
         :first_frame => true,
         :mcts_ascii_tree => "",
         :mcts_visual_tree => nothing,
@@ -30,7 +27,7 @@ function initialize_application_state()
         :canvas_size => CImGui.ImVec2(0,0),
         :color_code_q_values => Ref(true),
         :color_code_n_values => Ref(false),
-        :show_node_text => Ref(true),
+        :show_node_text => Ref(false),
         :show_weighted_arrows => Ref(false),
         :physics_repulsion_strength => Ref{Float32}(600.0f0),
         :physics_attraction_strength => Ref{Float32}(0.9f0),
@@ -39,7 +36,6 @@ function initialize_application_state()
         :expand_best_path_requested => false,
         :collapse_all_requested => false,
         :selected_node => nothing,
-        :show_selected_node_parents => Ref(false),
     )
     return application_state
 end
@@ -61,16 +57,13 @@ function set_state(key::Symbol, value::Any)
     return application_state[key]
 end
 
-const current_app = Ref{Union{Nothing, MirageImGuiApp}}(nothing)
-const live_reload_last_error = Ref{Union{Nothing, String}}(nothing)
-const live_reload_last_check_time = Ref(0.0)
-const live_reload_interval_seconds = Ref(0.1)
-requested_animation_frames = 0
+const current_app = Ref{Union{Nothing, MirageApp}}(nothing)
+
 function request_animation_frame(frames::Int64 = 1)
-    global requested_animation_frames = frames
     if current_app[] !== nothing
         request_frame!(current_app[], frames)
     end
+    return nothing
 end
 
 @kwdef mutable struct TreeNode
@@ -130,17 +123,34 @@ mutable struct Camera
     zoom::Float64
 end
 
-const VISUALIZATION_PALETTE = map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), reverse([
-    (  0/255, 174/255, 239/255),  # cyan
-    ( 68/255, 206/255,  27/255),  # green
-    (187/255, 219/255,  68/255),  # lime
-    (247/255, 227/255, 121/255),  # yellow
-    (242/255, 161/255,  52/255),  # orange
-    (255/255,  69/255,   0/255),  # red-orange
-]))
+const MATLAB_WINTER_PALETTE = map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), [
+    (  0/255,   0/255, 255/255),
+    (  0/255,  28/255, 241/255),
+    (  0/255,  57/255, 227/255),
+    (  0/255,  85/255, 213/255),
+    (  0/255, 113/255, 198/255),
+    (  0/255, 142/255, 184/255),
+    (  0/255, 170/255, 170/255),
+    (  0/255, 198/255, 156/255),
+    (  0/255, 227/255, 142/255),
+    (  0/255, 255/255, 128/255),
+])
+
+const MATLAB_HOT_PALETTE = map(t -> (Float32(t[1]), Float32(t[2]), Float32(t[3])), [
+    ( 20/255,   0/255,   0/255),
+    ( 80/255,   0/255,   0/255),
+    (150/255,   0/255,   0/255),
+    (220/255,  20/255,   0/255),
+    (255/255,  80/255,   0/255),
+    (255/255, 150/255,   0/255),
+    (255/255, 210/255,  40/255),
+    (255/255, 245/255, 130/255),
+    (255/255, 255/255, 210/255),
+    (255/255, 255/255, 255/255),
+])
 
 mutable struct MCTSVizSession
-    app::MirageImGuiApp
+    app::MirageApp
     mcts_tree::Any
     root_node::TreeNode
     node_id_counter::Int
@@ -149,28 +159,12 @@ mutable struct MCTSVizSession
     expand_levels::Int
 end
 
-function live_reload_frame!(::MirageImGuiApp)
-    now = time()
-    if now - live_reload_last_check_time[] < live_reload_interval_seconds[]
-        return nothing
-    end
-    live_reload_last_check_time[] = now
-
-    try
-        Revise.revise()
-        live_reload_last_error[] = nothing
-    catch e
-        msg = sprint(showerror, e)
-        if msg != live_reload_last_error[]
-            @warn "Revise failed; fix the error and the live GUI will retry." exception=(e, catch_backtrace())
-            live_reload_last_error[] = msg
-        end
-    end
-    return nothing
-end
-
 function mcts_viz_frame!(session::MCTSVizSession)
     app = session.app
+    if !get_state(:layout_setup_done)
+        dock_layout!(app; center = "Tree View", left = "Settings", left_size = 0.22)
+        set_state(:layout_setup_done, true)
+    end
     settings_window()
     CImGui.PushStyleVar(CImGui.ImGuiStyleVar_WindowPadding, (0.0f0, 0.0f0))
     CImGui.Begin("Tree View")
@@ -179,7 +173,6 @@ function mcts_viz_frame!(session::MCTSVizSession)
         draw_canvas!(app, :mcts_tree; label = "mcts_tree_canvas") do canvas, viewport
             session.node_id_counter = main_view(
                 canvas,
-                app.window,
                 viewport,
                 session.mcts_tree,
                 session.root_node,
@@ -214,7 +207,7 @@ function mcts_viz(
     live_reload_interval::Real = 0.1,
 )
     mcts_tree = mcts_policy.tree
-    app = MirageImGuiApp("MCTSViz"; width = 1200, height = 800)
+    app = MirageApp("MCTSViz"; width = 1200, height = 800)
     current_app[] = app
     camera = Camera([0.0, 0.0], false, 1.0)
 
@@ -228,20 +221,25 @@ function mcts_viz(
     )
     set_state(:mdp, mdp)
     set_state(:first_frame, true)
-    
+    set_state(:layout_setup_done, false)
+
     root_node = TreeNode(text = string(mcts_tree.s_labels[1]), index = 1, id = 1)
     all_nodes = [root_node]
     session = MCTSVizSession(app, mcts_tree, root_node, 1, all_nodes, camera, expand_levels)
-    live_reload_interval_seconds[] = Float64(live_reload_interval)
     request_frame!(app, 10)
 
     try
-        run!(
-            app;
-            before_frame! = live_reload ? live_reload_frame! : (app -> nothing),
-            idle_timeout = live_reload ? live_reload_interval : nothing,
-        ) do app
-            Base.invokelatest(mcts_viz_frame!, session)
+        if live_reload
+            run_live!(
+                app;
+                idle_timeout = live_reload_interval,
+            ) do app
+                Base.invokelatest(mcts_viz_frame!, session)
+            end
+        else
+            run!(app) do app
+                Base.invokelatest(mcts_viz_frame!, session)
+            end
         end
     catch e
         @error "Error in main loop!" exception=(e, catch_backtrace())
@@ -250,38 +248,43 @@ function mcts_viz(
     end
 end
 
-function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
+function main_view(canvas, canvas_viewport, mcts_tree, root_node, all_nodes, camera, delta_time, node_id_counter, expand_levels)
     state_node_map = Dict{Int, TreeNode}(map(n -> n.index => n, filter(n -> n.is_state, all_nodes)))
-    n_palette = VISUALIZATION_PALETTE
-    q_palette = n_palette
+    n_palette = MATLAB_WINTER_PALETTE
+    q_palette = MATLAB_HOT_PALETTE
 
     min_log_q_value = Inf
     max_log_q_value = -Inf
     min_n_value = Inf
     max_n_value = -Inf
-    min_arrow_n_value = Inf
-    max_arrow_n_value = -Inf
-    max_edge_visits = 0
+    min_edge_visits = Inf
+    max_edge_visits = -Inf
+
+    function edge_visits(parent::TreeNode, child::TreeNode)
+        if parent.is_state && !child.is_state
+            return mcts_tree.n[child.index]
+        elseif !parent.is_state && child.is_state
+            return get(mcts_tree._vis_stats, parent.index => child.index, 0)
+        else
+            return child.is_state ? mcts_tree.total_n[child.index] : mcts_tree.n[child.index]
+        end
+    end
 
     for node in all_nodes
         if node.is_state
             n_val = mcts_tree.total_n[node.index]
             min_n_value = min(min_n_value, n_val)
             max_n_value = max(max_n_value, n_val)
-            min_arrow_n_value = min(min_arrow_n_value, n_val)
-            max_arrow_n_value = max(max_arrow_n_value, n_val)
         else
             q_val = signed_log_scale(mcts_tree.q[node.index])
-            n_val = mcts_tree.n[node.index]
             min_log_q_value = min(min_log_q_value, q_val)
             max_log_q_value = max(max_log_q_value, q_val)
-            min_arrow_n_value = min(min_arrow_n_value, n_val)
-            max_arrow_n_value = max(max_arrow_n_value, n_val)
         end
 
         for child in node.children
-            child_visits = child.is_state ? mcts_tree.total_n[child.index] : mcts_tree.n[child.index]
-            max_edge_visits = max(max_edge_visits, child_visits)
+            visits = edge_visits(node, child)
+            min_edge_visits = min(min_edge_visits, visits)
+            max_edge_visits = max(max_edge_visits, visits)
         end
     end
 
@@ -293,9 +296,9 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         min_n_value = 0.0
         max_n_value = 0.0
     end
-    if min_arrow_n_value == Inf
-        min_arrow_n_value = 0.0
-        max_arrow_n_value = 0.0
+    if min_edge_visits == Inf
+        min_edge_visits = 0.0
+        max_edge_visits = 0.0
     end
 
     function normalize_range(value, min_value, max_value)
@@ -304,7 +307,8 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
 
     function rgba_from_palette(intensity, palette; alpha=255)
         color = interpolate_palette(intensity, palette)
-        return (color[1], color[2], color[3], alpha)
+        alpha_value = alpha > 1 ? alpha / 255 : alpha
+        return (color[1], color[2], color[3], alpha_value)
     end
 
     function node_label(node::TreeNode)
@@ -313,6 +317,10 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         else
             return string(mcts_tree.a_labels[node.index])
         end
+    end
+
+    function node_object(node::TreeNode)
+        return node.is_state ? mcts_tree.s_labels[node.index] : mcts_tree.a_labels[node.index]
     end
 
     function node_visits(node::TreeNode)
@@ -327,21 +335,82 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         return node.is_state ? "" : string(mcts_tree.q[node.index])
     end
 
-    function edge_visits(parent::TreeNode, child::TreeNode)
-        return child.is_state ? mcts_tree.total_n[child.index] : mcts_tree.n[child.index]
+    function render_table_row(name, value)
+        CImGui.TableNextRow()
+        CImGui.TableSetColumnIndex(0)
+        CImGui.TextUnformatted(string(name))
+        CImGui.TableSetColumnIndex(1)
+        CImGui.TextUnformatted(string(value))
+        return nothing
+    end
+
+    function render_object_table(object)
+        table_flags = CImGui.ImGuiTableFlags_Borders | CImGui.ImGuiTableFlags_RowBg
+        if CImGui.BeginTable("Object Fields", 2, table_flags)
+            try
+                render_table_row("type", typeof(object))
+                names = fieldnames(typeof(object))
+                if isempty(names)
+                    render_table_row("value", object)
+                else
+                    for name in names
+                        render_table_row(name, getfield(object, name))
+                    end
+                end
+            finally
+                CImGui.EndTable()
+            end
+        end
+        return nothing
+    end
+
+    function render_internal_table(node)
+        table_flags = CImGui.ImGuiTableFlags_Borders | CImGui.ImGuiTableFlags_RowBg
+        if CImGui.BeginTable("Internal Node Details", 2, table_flags)
+            try
+                render_table_row("node id", node.id)
+                render_table_row("tree index", node.index)
+                render_table_row("kind", node.is_state ? "state" : "action")
+                render_table_row("position", "($(round(node.position[1], digits=2)), $(round(node.position[2], digits=2)))")
+            finally
+                CImGui.EndTable()
+            end
+        end
+        return nothing
+    end
+
+    function render_node_toggle_button(prefix, node)
+        if CImGui.Button("Toggle##$(prefix)_$(node.id)")
+            toggle_node!(node)
+            if get_state(:selected_node) === nothing
+                CImGui.CloseCurrentPopup()
+            end
+        end
+        CImGui.SameLine()
+        CImGui.TextUnformatted("$(node.is_state ? "State" : "Action") #$(node.id): $(node_label(node))")
+        return nothing
     end
 
     function n_color(node::TreeNode; alpha=255)
-        intensity = normalize_range(node_visits(node), min_arrow_n_value, max_arrow_n_value)
+        intensity = normalize_range(node_visits(node), min_n_value, max_n_value)
+        return rgba_from_palette(intensity, n_palette; alpha)
+    end
+
+    function edge_color(parent::TreeNode, child::TreeNode; alpha=255)
+        min_log_visits = log1p(max(0, min_edge_visits))
+        max_log_visits = log1p(max(0, max_edge_visits))
+        intensity = normalize_range(log1p(max(0, edge_visits(parent, child))), min_log_visits, max_log_visits)
         return rgba_from_palette(intensity, n_palette; alpha)
     end
 
     function edge_width(parent::TreeNode, child::TreeNode)
-        if !get_state(:show_weighted_arrows)[] || max_edge_visits <= 0
+        if !get_state(:show_weighted_arrows)[] || max_edge_visits <= min_edge_visits
             return 1.5
         end
-        intensity = log1p(max(0, edge_visits(parent, child))) / log1p(max_edge_visits)
-        return 0.75 + 4.25 * intensity
+        min_log_visits = log1p(max(0, min_edge_visits))
+        max_log_visits = log1p(max(0, max_edge_visits))
+        intensity = normalize_range(log1p(max(0, edge_visits(parent, child))), min_log_visits, max_log_visits)
+        return 0.75 + 4.75 * intensity
     end
 
     # Helper functions
@@ -518,7 +587,64 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         root_node.velocity .= [0.0, 0.0]
         root_node.force .= [0.0, 0.0]
         set_state(:selected_node, nothing)
-        set_state(:show_selected_node_parents, false)
+    end
+
+    function delete_unreachable_nodes(root_node, all_nodes, state_node_map)
+        # Find all nodes reachable from the root
+        reachable_nodes = Set{TreeNode}()
+        q = [root_node]
+        push!(reachable_nodes, root_node)
+
+        head = 1
+        while head <= length(q)
+            curr = q[head]
+            head += 1
+
+            for child in curr.children
+                if !(child in reachable_nodes)
+                    push!(reachable_nodes, child)
+                    push!(q, child)
+                end
+            end
+        end
+
+        # Filter all_nodes and state_node_map
+        filter!(n -> n in reachable_nodes, all_nodes)
+
+        # Rebuild state_node_map from the filtered all_nodes
+        empty!(state_node_map)
+        for n in all_nodes
+            if n.is_state
+                state_node_map[n.index] = n
+            end
+        end
+    end
+
+    function clear_selected_node_if_unreachable!()
+        selected_node = get_state(:selected_node)
+        if selected_node !== nothing && !(selected_node in all_nodes)
+            set_state(:selected_node, nothing)
+            return true
+        end
+        return false
+    end
+
+    function toggle_node!(node)
+        if isempty(node.children)
+            expand_one_level!(node)
+        else
+            children_to_process = copy(node.children)
+            empty!(node.children)
+
+            for child in children_to_process
+                filter!(p -> p.id != node.id, child.parents)
+            end
+
+            delete_unreachable_nodes(root_node, all_nodes, state_node_map)
+            clear_selected_node_if_unreachable!()
+        end
+        request_animation_frame(10)
+        return nothing
     end
 
     if get_state(:first_frame)
@@ -544,16 +670,16 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
     end
 
     # Camera panning
-    canvas_pos = canvas_viewport.pos
-    canvas_size = canvas_viewport.size
+    canvas_pos = CImGui.ImVec2(canvas_viewport.x, canvas_viewport.y)
+    canvas_size = CImGui.ImVec2(canvas_viewport.width, canvas_viewport.height)
     set_state(:canvas_pos, canvas_pos)
     set_state(:canvas_size, canvas_size)
-    mx, my = GLFW.GetCursorPos(window)
+    mouse_rel = canvas_viewport.mouse_rel
     is_hovering_canvas = canvas_viewport.hovered
 
-    function screen_to_world(screen, pan, zoom, cpos, csize)
-        relative_mouse = [screen[1] - cpos.x - csize.x/2, screen[2] - cpos.y - csize.y/2]
-        return (relative_mouse .- pan) ./ zoom
+    function canvas_to_world(mouse, pan, zoom, size)
+        centered_mouse = [mouse[1] - size.x / 2, mouse[2] - size.y / 2]
+        return (centered_mouse .- pan) ./ zoom
     end
 
     if get_state(:center_root_requested)
@@ -564,11 +690,10 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
 
     wheel_delta = unsafe_load(CImGui.GetIO().MouseWheel)
     if is_hovering_canvas && wheel_delta != 0
-        mouse_screen = [mx, my]
-        world_pos_before = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
+        world_pos_before = canvas_to_world(mouse_rel, camera.pan, camera.zoom, canvas_size)
         camera.zoom *= (1.0 + wheel_delta * 0.1)
         camera.zoom = clamp(camera.zoom, 0.1, 10.0)
-        world_pos_after = screen_to_world(mouse_screen, camera.pan, camera.zoom, canvas_pos, canvas_size)
+        world_pos_after = canvas_to_world(mouse_rel, camera.pan, camera.zoom, canvas_size)
         pan_delta = world_pos_before - world_pos_after
         camera.pan .-= pan_delta .* camera.zoom
         request_animation_frame(10)
@@ -684,17 +809,30 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
 
     # Rendering
     Mirage.save()
-    Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
     Mirage.fillcolor(Mirage.rgba(0, 0, 20, 255))
     Mirage.fillrect(0, 0, canvas.width, canvas.height)
     Mirage.restore()
     Mirage.save()
-    Mirage.update_ortho_projection_matrix(canvas.width, canvas.height, 1.0)
     Mirage.translate(canvas.width / 2 + camera.pan[1], canvas.height / 2 + camera.pan[2])
     Mirage.scale(camera.zoom, camera.zoom)
 
     # Draw connections
-    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius, stroke_width, start_color, end_color, gradient)
+    function fill_polygon!(points, color)
+        Mirage.save()
+        try
+            Mirage.fillcolor(color)
+            Mirage.moveto(points[1]...)
+            for point in points[2:end]
+                Mirage.lineto(point...)
+            end
+            Mirage.closepath()
+            Mirage.fill()
+        finally
+            Mirage.restore()
+        end
+    end
+
+    function draw_arrow(p1, p2, arrowhead_length, arrowhead_angle, node_radius, stroke_width, color)
         if p1 == p2
             return
         end
@@ -706,59 +844,31 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         end
         dir_x = dx / distance
         dir_y = dy / distance
+        normal_x = -dir_y
+        normal_y = dir_x
         p2_adjusted_x = p2[1] - dir_x * node_radius
         p2_adjusted_y = p2[2] - dir_y * node_radius
-        
-        # Draw the main line
-        Mirage.strokewidth(stroke_width)
-        if gradient
-            segment_count = 12
-            for i in 1:segment_count
-                t1 = (i - 1) / segment_count
-                t2 = i / segment_count
-                c = interpolate_rgba(t1, start_color, end_color)
-                segment_start_x = p1[1] * (1 - t1) + p2_adjusted_x * t1
-                segment_start_y = p1[2] * (1 - t1) + p2_adjusted_y * t1
-                segment_end_x = p1[1] * (1 - t2) + p2_adjusted_x * t2
-                segment_end_y = p1[2] * (1 - t2) + p2_adjusted_y * t2
-                Mirage.strokecolor(c)
-                Mirage.moveto(segment_start_x, segment_start_y)
-                Mirage.lineto(segment_end_x, segment_end_y)
-                Mirage.stroke()
-            end
-        else
-            Mirage.strokecolor(start_color)
-            Mirage.moveto(p1[1], p1[2])
-            Mirage.lineto(p2_adjusted_x, p2_adjusted_y)
-            Mirage.stroke()
-        end
+        shaft_half_width = stroke_width / 2
+
+        # Draw the main shaft as filled geometry so thickness is reliable.
+        fill_polygon!([
+            (p1[1] + normal_x * shaft_half_width, p1[2] + normal_y * shaft_half_width),
+            (p2_adjusted_x + normal_x * shaft_half_width, p2_adjusted_y + normal_y * shaft_half_width),
+            (p2_adjusted_x - normal_x * shaft_half_width, p2_adjusted_y - normal_y * shaft_half_width),
+            (p1[1] - normal_x * shaft_half_width, p1[2] - normal_y * shaft_half_width),
+        ], color)
 
         # Calculate arrowhead points
         p3_x = p2_adjusted_x - arrowhead_length * dir_x
         p3_y = p2_adjusted_y - arrowhead_length * dir_y
-        
-        # Rotate direction vector for arrowhead lines
-        # Rotate by +arrowhead_angle
-        cos_angle = cos(arrowhead_angle)
-        sin_angle = sin(arrowhead_angle)
-        arrow_dx = p3_x - p2_adjusted_x
-        arrow_dy = p3_y - p2_adjusted_y
-        arrow_p1_x = cos_angle * arrow_dx - sin_angle * arrow_dy + p2_adjusted_x
-        arrow_p1_y = sin_angle * arrow_dx + cos_angle * arrow_dy + p2_adjusted_y
-        
-        # Rotate by -arrowhead_angle
-        arrow_p2_x = cos_angle * arrow_dx + sin_angle * arrow_dy + p2_adjusted_x
-        arrow_p2_y = -sin_angle * arrow_dx + cos_angle * arrow_dy + p2_adjusted_y
+        arrowhead_half_width = max(arrowhead_length * tan(arrowhead_angle), stroke_width * 1.75)
 
-        # Draw arrowhead
-        Mirage.strokecolor(end_color)
-        Mirage.moveto(p2_adjusted_x, p2_adjusted_y)
-        Mirage.lineto(arrow_p1_x, arrow_p1_y)
-        Mirage.stroke()
-        
-        Mirage.moveto(p2_adjusted_x, p2_adjusted_y)
-        Mirage.lineto(arrow_p2_x, arrow_p2_y)
-        Mirage.stroke()
+        # Draw arrowhead as a filled triangle so it tracks the shaft color and weight.
+        fill_polygon!([
+            (p2_adjusted_x, p2_adjusted_y),
+            (p3_x + normal_x * arrowhead_half_width, p3_y + normal_y * arrowhead_half_width),
+            (p3_x - normal_x * arrowhead_half_width, p3_y - normal_y * arrowhead_half_width),
+        ], color)
     end
 
     function draw_connections(node, visited=Set())
@@ -766,11 +876,9 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
             return
         end
         push!(visited, node)
-        color_by_n = get_state(:color_code_n_values)[]
         for child in node.children
-            start_color = color_by_n ? n_color(node; alpha=90) : Mirage.rgba(255, 255, 255, 50)
-            end_color = color_by_n ? n_color(child; alpha=90) : Mirage.rgba(255, 255, 255, 50)
-            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0, edge_width(node, child), start_color, end_color, color_by_n)
+            color = get_state(:color_code_n_values)[] ? edge_color(node, child; alpha=230) : Mirage.rgba(255, 255, 255, 90)
+            draw_arrow(node.position, child.position, 10.0, pi/6, 24.0, edge_width(node, child), color)
             draw_connections(child, visited)
         end
     end
@@ -778,44 +886,12 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
     draw_connections(root_node)
     Mirage.restore()
 
-    function delete_unreachable_nodes(root_node, all_nodes, state_node_map)
-        # Find all nodes reachable from the root
-        reachable_nodes = Set{TreeNode}()
-        q = [root_node]
-        push!(reachable_nodes, root_node)
-        
-        head = 1
-        while head <= length(q)
-            curr = q[head]
-            head += 1
-            
-            for child in curr.children
-                if !(child in reachable_nodes)
-                    push!(reachable_nodes, child)
-                    push!(q, child)
-                end
-            end
-        end
-
-        # Filter all_nodes and state_node_map
-        filter!(n -> n in reachable_nodes, all_nodes)
-        
-        # Rebuild state_node_map from the filtered all_nodes
-        empty!(state_node_map)
-        for n in all_nodes
-            if n.is_state
-                state_node_map[n.index] = n
-            end
-        end
-    end
-
     # Draw nodes and handle clicks
     for node in copy(all_nodes)
         Mirage.save()
         
         # Correctly calculate world mouse position considering pan and zoom
-        relative_mouse = [mx - canvas_pos.x - canvas.width/2, my - canvas_pos.y - canvas.height/2]
-        world_mouse_pos = (relative_mouse .- camera.pan) ./ camera.zoom
+        world_mouse_pos = canvas_to_world(mouse_rel, camera.pan, camera.zoom, canvas_size)
         
         # Make hover radius constant in screen space by scaling it in world space
         is_hovered = (
@@ -844,26 +920,11 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
         end
 
         if is_hovered && CImGui.IsMouseClicked(0) #&& !camera.panning
-            if isempty(node.children)
-                expand_one_level!(node)
-            else
-                # Sever connections from the clicked node to its children
-                children_to_process = copy(node.children)
-                empty!(node.children)
-
-                for child in children_to_process
-                    filter!(p -> p.id != node.id, child.parents)
-                end
-
-                # Garbage collect nodes that are no longer reachable
-                delete_unreachable_nodes(root_node, all_nodes, state_node_map)
-            end
-            request_animation_frame(10)
+            toggle_node!(node)
         end
 
         if is_hovered && CImGui.IsMouseClicked(1)
             set_state(:selected_node, node)
-            set_state(:show_selected_node_parents, false)
             CImGui.OpenPopup("Node Details")
             request_animation_frame(10)
         end
@@ -874,19 +935,6 @@ function main_view(canvas, window, canvas_viewport, mcts_tree, root_node, all_no
             # Draw circle for state nodes
             Mirage.circle(24)
             Mirage.fill()
-            if node === root_node
-                Mirage.save()
-                Mirage.scale(1 / camera.zoom)
-                Mirage.translate(-6, 8)
-                Mirage.save()
-                Mirage.translate(1, 1)
-                Mirage.fillcolor(Mirage.rgba(0, 0, 0, 255))
-                Mirage.text("R")
-                Mirage.restore()
-                Mirage.fillcolor(Mirage.rgba(255, 255, 255, 255))
-                Mirage.text("R")
-                Mirage.restore()
-            end
             if is_hovered
                 Mirage.save()
                 Mirage.strokecolor(Mirage.rgba(255, 255, 255, 255))
@@ -990,31 +1038,48 @@ N: $visits, Q: $v_val"
     selected_node = get_state(:selected_node)
     if selected_node !== nothing && CImGui.BeginPopup("Node Details")
         try
-            CImGui.TextUnformatted(selected_node.is_state ? "State node" : "Action node")
+            CImGui.TextUnformatted(selected_node.is_state ? "State" : "Action")
             CImGui.Separator()
-            CImGui.TextUnformatted("Label: $(node_label(selected_node))")
-            CImGui.TextUnformatted("Index: $(selected_node.index)")
-            CImGui.TextUnformatted("Node id: $(selected_node.id)")
-            CImGui.TextUnformatted("Visits N: $(node_visits(selected_node))")
+            CImGui.TextUnformatted("N: $(node_visits(selected_node))")
             if !selected_node.is_state
                 CImGui.TextUnformatted("Q: $(node_value_text(selected_node))")
             end
-            CImGui.TextUnformatted("Position: ($(round(selected_node.position[1], digits=2)), $(round(selected_node.position[2], digits=2)))")
-            CImGui.TextUnformatted("Parents: $(length(selected_node.parents))")
-            CImGui.TextUnformatted("Children: $(length(selected_node.children))")
-            CImGui.Separator()
-            if CImGui.Button(get_state(:show_selected_node_parents)[] ? "Hide Parents" : "Show All Parents")
-                set_state(:show_selected_node_parents, !get_state(:show_selected_node_parents)[])
-                request_animation_frame(10)
+            if CImGui.Button("Expand Best Path From Node")
+                expand_best_path!(selected_node)
+                request_animation_frame(30)
             end
-            if get_state(:show_selected_node_parents)[]
-                if isempty(selected_node.parents)
-                    CImGui.TextUnformatted("No parents")
-                else
-                    for (i, parent) in enumerate(selected_node.parents)
-                        CImGui.TextUnformatted("$(i). $(parent.is_state ? "State" : "Action") #$(parent.id): $(node_label(parent))")
+            CImGui.Separator()
+
+            CImGui.TextUnformatted("Fields")
+            render_object_table(node_object(selected_node))
+            CImGui.Separator()
+
+            CImGui.TextUnformatted("Parents ($(length(selected_node.parents)))")
+            if isempty(selected_node.parents)
+                CImGui.TextUnformatted("None")
+            else
+                for parent in selected_node.parents
+                    render_node_toggle_button("parent", parent)
+                end
+            end
+            CImGui.Separator()
+
+            CImGui.TextUnformatted("Children ($(length(selected_node.children)))")
+            if isempty(selected_node.children)
+                if CImGui.Button("Expand##selected_node")
+                    toggle_node!(selected_node)
+                    if get_state(:selected_node) === nothing
+                        CImGui.CloseCurrentPopup()
                     end
                 end
+            else
+                for child in selected_node.children
+                    render_node_toggle_button("child", child)
+                end
+            end
+
+            if CImGui.CollapsingHeader("Internal")
+                render_internal_table(selected_node)
             end
         finally
             CImGui.EndPopup()
@@ -1026,14 +1091,27 @@ end
 
 function settings_window()
     CImGui.Begin("Settings")
+    draw_list = CImGui.GetWindowDrawList()
+    title_pos = CImGui.GetCursorScreenPos()
+    title_color = CImGui.GetColorU32(CImGui.ImVec4(0.92f0, 0.94f0, 0.96f0, 1.0f0))
+    CImGui.AddText(draw_list, CImGui.GetFont(), CImGui.GetFontSize() * 1.65, title_pos, title_color, "MCTSViz.jl")
+    CImGui.Dummy((0.0f0, CImGui.GetFontSize() * 2.0f0))
+    CImGui.Separator()
+    CImGui.Spacing()
+
+    CImGui.SeparatorText("Navigation")
     if CImGui.Button("Center Root")
         set_state(:center_root_requested, true)
         request_animation_frame(10)
     end
+    CImGui.Spacing()
+
+    CImGui.SeparatorText("Tree")
     if CImGui.Button("Expand All")
         set_state(:expand_all_requested, true)
         request_animation_frame(30)
     end
+    CImGui.SameLine()
     if CImGui.Button("Expand Best Path")
         set_state(:expand_best_path_requested, true)
         request_animation_frame(30)
@@ -1042,16 +1120,24 @@ function settings_window()
         set_state(:collapse_all_requested, true)
         request_animation_frame(30)
     end
+    CImGui.Spacing()
+
+    CImGui.SeparatorText("Rendering")
     CImGui.Checkbox("Color code Q-values", get_state(:color_code_q_values))
     CImGui.Checkbox("Color code N-values", get_state(:color_code_n_values))
     CImGui.Checkbox("Show node text", get_state(:show_node_text))
     CImGui.Checkbox("Weight arrows by N", get_state(:show_weighted_arrows))
+    CImGui.Spacing()
+
+    CImGui.SeparatorText("Layout Physics")
+    CImGui.PushItemWidth(-1)
     if CImGui.SliderFloat("Repulsion", get_state(:physics_repulsion_strength), 0.0f0, 3000.0f0)
         request_animation_frame(30)
     end
     if CImGui.SliderFloat("Attraction", get_state(:physics_attraction_strength), 0.0f0, 5.0f0)
         request_animation_frame(30)
     end
+    CImGui.PopItemWidth()
     CImGui.End()
 end
 
@@ -1064,15 +1150,6 @@ function interpolate_rgb(t::Float64, c1::Tuple, c2::Tuple)::Tuple
     g = (1 - t) * c1[2] + t * c2[2]
     b = (1 - t) * c1[3] + t * c2[3]
     return (r, g, b)
-end
-
-function interpolate_rgba(t::Real, c1::Tuple, c2::Tuple)::Tuple
-    t_clamped = clamp(Float64(t), 0.0, 1.0)
-    r = (1 - t_clamped) * c1[1] + t_clamped * c2[1]
-    g = (1 - t_clamped) * c1[2] + t_clamped * c2[2]
-    b = (1 - t_clamped) * c1[3] + t_clamped * c2[3]
-    a = (1 - t_clamped) * c1[4] + t_clamped * c2[4]
-    return (r, g, b, a)
 end
 
 function interpolate_palette(t::Float64, colors)::Tuple
@@ -1192,6 +1269,6 @@ function (@main)(args::Vector{String})::Cint
     return 0
 end
 
-export mcts_viz, mcts_ascii_viz, example_mdp, MirageImGuiApps
+export mcts_viz, mcts_ascii_viz, example_mdp
 
 end # module MCTSViz
