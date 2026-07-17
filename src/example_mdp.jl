@@ -16,17 +16,17 @@ struct GridWorldMDP <: MDP{GridWorldState, Symbol}
     discount_factor::Float64
 end
 
-function GridWorldMDP(; size_x=10, size_y=10,
-    reward_states_values=Dict(
-        GridWorldState(4,3)=>-10.0,
-        GridWorldState(4,6)=>-5.0,
-        GridWorldState(9,3)=>10.0,
-        GridWorldState(8,8)=>3.0
-    ),
-    hit_wall_reward=-1.0,
-    tprob=0.7,
-    discount_factor=0.9
-)
+function GridWorldMDP(;size_x=10,
+                      size_y=10,
+                      reward_states_values=Dict(
+                          GridWorldState(4,3)=>-10.0,
+                          GridWorldState(4,6)=>-5.0,
+                          GridWorldState(9,3)=>10.0,
+                          GridWorldState(8,8)=>3.0
+                      ),
+                      hit_wall_reward=-1.0,
+                      tprob=0.7,
+                      discount_factor=0.9)
     GridWorldMDP(size_x, size_y, reward_states_values, hit_wall_reward, tprob, discount_factor)
 end
 
@@ -122,6 +122,7 @@ function example_mdp()
     # Create an instance of the problem
     mdp = GridWorldMDP()
 
+    # Example callback function
     function callback(planner::MCTS.MCTSPlanner, i::Int64)
         if i == 5
             @info mcts_ascii_viz(planner.tree)
@@ -142,6 +143,6 @@ function example_mdp()
     s = GridWorldState(5, 5)
     println(action(mcts_policy, s))  # Returns the suggested action for state (9, 2)
 
-    @info mcts_ascii_viz(mcts_policy.tree)
+    #@info mcts_ascii_viz(mcts_policy.tree)
     mcts_viz(mdp, mcts_policy)
 end

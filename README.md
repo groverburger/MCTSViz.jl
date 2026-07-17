@@ -25,11 +25,36 @@ using MCTS
 mcts_viz(my_mdp, mcts_policy)
 ```
 
-This will open a window displaying the MCTS tree, which you can pan, zoom, and interact with by clicking on nodes to expand or collapse them.
+This opens the current MCTS tree. Scroll to zoom, left- or middle-drag to pan,
+left-click a node to expand or collapse it, and right-click a node to inspect it.
 
-## Example
+The visualizer reads the tree exactly as it exists when called. Configure MCTS with
+`enable_tree_vis = true` so its sampled state transitions are recorded:
 
-The project includes an example using a simple GridWorld MDP. You can run this example to see the visualizer in action.
+```julia
+solver = MCTSSolver(enable_tree_vis = true)
+mcts_policy = solve(solver, my_mdp)
+
+# Run or query the policy, then inspect its current tree.
+mcts_viz(my_mdp, mcts_policy)
+```
+
+For a text representation instead of a window:
+
+```julia
+println(mcts_ascii_viz(my_mdp, mcts_policy; max_depth = 5, show_stats = true))
+```
+
+The GUI and MDP-aware ASCII view connect each action to its most likely next state
+according to the MDP, while displaying statistics from the current search tree.
+`mcts_ascii_viz(mcts_policy.tree)` remains available when you want the raw sampled
+transitions recorded by MCTS instead.
+
+## Examples
+
+The project includes a small GridWorld and a one-week California road-trip MDP.
+The road trip balances landmarks visited against fuel, admission, and hotel costs,
+with driving, sightseeing, and sleep all consuming time.
 
 The file `src/example_mdp.jl` contains the `GridWorldMDP` definition and an `example_mdp()` function that sets up and runs the visualization.
 
@@ -50,6 +75,15 @@ MCTSViz.example_mdp()
 ```
 
 This will demonstrate how to use `mcts_viz` and allow you to explore the MCTS tree for the `GridWorldMDP` problem.
+
+Run the road-trip example with:
+
+```julia
+MCTSViz.road_trip_example()
+```
+
+Its model is in `src/road_trip_mdp.jl`. Adjust `landmark_reward` and
+`cost_weight` when constructing `CaliforniaRoadTripMDP` to change the tradeoff.
 
 ## Live REPL Development
 
