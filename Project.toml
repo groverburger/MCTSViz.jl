@@ -18,6 +18,3 @@ Mirage = "0.1.0"
 POMDPTools = "1.1.0"
 POMDPs = "1.0.0"
 Revise = "3.11.0"
-
-[sources]
-Mirage = {url = "https://github.com/groverburger/Mirage.jl.git", rev = "master"}

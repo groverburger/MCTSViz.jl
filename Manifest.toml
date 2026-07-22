@@ -690,9 +690,7 @@ version = "2.28.6+0"
 
 [[deps.Mirage]]
 deps = ["CImGui", "ColorTypes", "FileIO", "FixedPointNumbers", "GLFW", "ImageIO", "ModernGL"]
-git-tree-sha1 = "5f0402b276f65db9c7f9031facae75a08ccd8857"
-repo-rev = "master"
-repo-url = "https://github.com/groverburger/Mirage.jl.git"
+git-tree-sha1 = "53bfd26fb1375b6dca70cccef04ae2be5522d5f2"
 uuid = "e54eaeca-a684-404c-9867-c26beaca1479"
 version = "0.1.0"
 weakdeps = ["Revise"]
